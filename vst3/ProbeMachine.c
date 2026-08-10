@@ -659,6 +659,22 @@ void eps16_probe_machine_panel_byte(uint8_t value) {
 void eps16_probe_machine_analog(unsigned int channel, uint16_t value) {
     if (!plugin_initialized || channel >= 8) return;
     analog_values[channel] = (uint16_t)((value > 1023 ? 1023 : value) << 6);
+    if (channel == 3) {
+        /* The loaded-instrument performance display includes the selected
+           volume, but this OS path changes the value without sending a fresh
+           KPC/VFD frame. Mirror only that already-rendered hardware field so
+           the panel stays coherent with the original ADC-controlled change. */
+        char *const volume = strstr(panel_display, " VOLUME=");
+        if (volume && volume[8] && volume[9]) {
+            const unsigned int raw = value > 715 ? 715 : value;
+            const unsigned int displayed = (raw * 99U + 357U) / 715U;
+            volume[8] = displayed >= 10 ? (char)('0' + displayed / 10) : ' ';
+            volume[9] = (char)('0' + displayed % 10);
+            plugin_capture_display(panel_display, panel_display_decimal_mask,
+                                   panel_cursor_start, panel_cursor_end,
+                                   panel_cursor_segment_mask);
+        }
+    }
 }
 
 void eps16_probe_machine_sampling_input_rate(double sample_rate) {

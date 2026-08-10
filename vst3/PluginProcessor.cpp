@@ -80,13 +80,29 @@ const juce::Identifier Eps16PlusProcessor::mountedDiskPathKey{"mountedDiskPath"}
 const juce::Identifier Eps16PlusProcessor::blankDiskMountedKey{"blankDiskMounted"};
 
 Eps16PlusProcessor::Eps16PlusProcessor()
-    : AudioProcessor(BusesProperties()
-          /* Keep the instrument's main input disabled and expose sampling as
-             an auxiliary input. Hosts such as Ableton Live then present it as
-             a routable sidechain source on a MIDI/instrument track. */
-          .withInput("Main Input", juce::AudioChannelSet::stereo(), false)
-          .withInput("Sampling Input", juce::AudioChannelSet::stereo(), true)
-          .withOutput("Main Output", juce::AudioChannelSet::stereo(), true)) {
+    : AudioProcessor(
+#if JucePlugin_Build_AU
+        BusesProperties()
+            .withInput("Sampling Input",
+                       juce::AudioChannelSet::stereo(),
+                       false)
+            .withOutput("Main Output",
+                        juce::AudioChannelSet::stereo(),
+                        true)
+#else
+        BusesProperties()
+            .withInput("Main Input",
+                       juce::AudioChannelSet::stereo(),
+                       false)
+            .withInput("Sampling Input",
+                       juce::AudioChannelSet::stereo(),
+                       true)
+            .withOutput("Main Output",
+                        juce::AudioChannelSet::stereo(),
+                        true)
+#endif
+    )
+{
     refreshResourcePaths();
 }
 
@@ -108,21 +124,65 @@ void Eps16PlusProcessor::prepareToPlay(double sampleRate, int) {
     setLatencySamples(eps16::vst3::BandlimitedResampler::latencySamples(sampleRate));
 }
 
-bool Eps16PlusProcessor::isBusesLayoutSupported(const BusesLayout &layouts) const {
-    return layouts.inputBuses.size() == 2 &&
-           layouts.getChannelSet(true, 0).isDisabled() &&
-           layouts.getChannelSet(true, 1) == juce::AudioChannelSet::stereo() &&
-           layouts.getMainOutputChannelSet() == juce::AudioChannelSet::stereo();
+bool Eps16PlusProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
+{
+    if (layouts.getMainOutputChannelSet() != juce::AudioChannelSet::stereo())
+        return false;
+
+#if JucePlugin_Build_AU
+
+    // AU: one optional stereo input
+    if (layouts.inputBuses.size() == 0)
+        return true;
+
+    if (layouts.inputBuses.size() == 1)
+    {
+        auto input = layouts.getChannelSet (true, 0);
+        return input.isDisabled()
+            || input == juce::AudioChannelSet::stereo();
+    }
+
+    return false;
+
+#else
+
+    // VST3: disabled main input + stereo sampling input
+    if (layouts.inputBuses.size() != 2)
+        return false;
+
+    return layouts.getChannelSet (true, 0).isDisabled()
+        && layouts.getChannelSet (true, 1) == juce::AudioChannelSet::stereo();
+
+#endif
 }
 
 void Eps16PlusProcessor::processBlock(juce::AudioBuffer<float> &buffer,
-                                      juce::MidiBuffer &midi) {
+                                      juce::MidiBuffer &midi) 
+{
     juce::ScopedNoDenormals noDenormals;
     const auto samples = buffer.getNumSamples();
-    auto samplingInput = getBusBuffer(buffer, true, 1);
-    auto mainOutput = getBusBuffer(buffer, false, 0);
-    const float *inputLeft = samplingInput.getReadPointer(0);
-    const float *inputRight = samplingInput.getReadPointer(1);
+    
+    
+#if JucePlugin_Build_AU
+    constexpr int samplingBus = 0;
+#else
+    constexpr int samplingBus = 1;
+#endif
+
+    auto samplingInput = getBusBuffer(buffer, true, samplingBus);
+    auto mainOutput    = getBusBuffer(buffer, false, 0);
+
+    const float* inputLeft  = nullptr;
+    const float* inputRight = nullptr;
+
+    if (samplingInput.getNumChannels() > 0)
+        inputLeft = samplingInput.getReadPointer(0);
+
+    if (samplingInput.getNumChannels() > 1)
+        inputRight = samplingInput.getReadPointer(1);
+    else
+        inputRight = inputLeft;
+
     std::size_t eventCount = 0;
     if (const auto *playHead = getPlayHead()) {
         if (const auto position = playHead->getPosition()) {
@@ -134,39 +194,50 @@ void Eps16PlusProcessor::processBlock(juce::AudioBuffer<float> &buffer,
                     midiEvents.data(), midiEvents.size());
         }
     }
-    std::size_t sysExInputCount = 0;
-    for (const auto metadata : midi) {
-        if (eventCount == midiEvents.size()) break;
+std::size_t sysExInputCount = 0;
+for (const auto metadata : midi)
+{
+    if (eventCount == midiEvents.size())
+        break;
+
         const auto message = metadata.getMessage();
-        const auto *raw = message.getRawData();
+        const auto* raw = message.getRawData();
         const auto length = message.getRawDataSize();
-        if (length < 1) continue;
-        if (message.isSysEx()) {
-            if (sysExInputCount == sysExInput.size() ||
-                static_cast<std::size_t>(length) > maximumInputSysExBytes)
-                continue;
-            auto &storage = sysExInput[sysExInputCount++];
-            std::copy_n(raw, length, storage.begin());
-            midiEvents[eventCount++] = {
-                juce::jlimit(0, samples, metadata.samplePosition),
-                0, 0, 0, storage.data(), static_cast<std::size_t>(length)};
-            continue;
-        }
-        midiEvents[eventCount++] = {
-            juce::jlimit(0, samples, metadata.samplePosition), raw[0],
-            static_cast<std::uint8_t>(length > 1 ? raw[1] : 0),
-            static_cast<std::uint8_t>(length > 2 ? raw[2] : 0)};
-    }
+if (length < 1) continue;
+if (message.isSysEx()) {
+    if (sysExInputCount == sysExInput.size() ||
+        static_cast<std::size_t>(length) > maximumInputSysExBytes)
+        continue;
+    auto &storage = sysExInput[sysExInputCount++];
+    std::copy_n(raw, length, storage.begin());
+    midiEvents[eventCount++] = {
+        juce::jlimit(0, samples, metadata.samplePosition),
+        0, 0, 0, storage.data(), static_cast<std::size_t>(length)};
+    continue;
+}
+midiEvents[eventCount++] = {
+    juce::jlimit(0, samples, metadata.samplePosition), raw[0],
+    static_cast<std::uint8_t>(length > 1 ? raw[1] : 0),
+    static_cast<std::uint8_t>(length > 2 ? raw[2] : 0)};
+
     std::stable_sort(midiEvents.begin(), midiEvents.begin() + eventCount,
                      [](const auto &left, const auto &right) {
                          return left.sampleOffset < right.sampleOffset;
                      });
+    }
 
-    std::size_t sysExOutputCount = 0;
-    bridge.process(inputLeft, inputRight, mainOutput.getWritePointer(0),
-                   mainOutput.getWritePointer(1), samples, midiEvents.data(),
-                   eventCount, sysExOutput.data(), sysExOutput.size(),
-                   &sysExOutputCount);
+std::size_t sysExOutputCount = 0;
+bridge.process(inputLeft,
+               inputRight,
+               mainOutput.getWritePointer(0),
+               mainOutput.getWritePointer(1),
+               samples,
+               midiEvents.data(),
+               eventCount,
+               sysExOutput.data(),
+               sysExOutput.size(),
+               &sysExOutputCount);
+
     midi.clear();
     for (std::size_t index = 0; index < sysExOutputCount; ++index) {
         const auto &event = sysExOutput[index];
