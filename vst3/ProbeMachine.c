@@ -13,9 +13,11 @@ static void plugin_capture_keyon(unsigned int voice);
     plugin_capture_display((display), (decimal_mask), (cursor_start), (cursor_end), (cursor_mask))
 #define EPS16_ES5505_KEYON_PUBLISHED(voice) plugin_capture_keyon((voice))
 #define EPS16_ROM_PROBE_CONTEXT 1
+#define EPS16_PLUGIN_BUILD 1
 #define main eps16_probe_cli_main
 #include "../native/rom_probe.c"
 #undef main
+#undef EPS16_PLUGIN_BUILD
 #undef EPS16_ROM_PROBE_CONTEXT
 #undef EPS16_ES5505_KEYON_PUBLISHED
 #undef EPS16_PANEL_DISPLAY_PUBLISHED
@@ -171,6 +173,16 @@ static void plugin_capture_keyon(unsigned int voice) {
     X(plugin_published_display) X(plugin_published_decimal_mask) \
     X(plugin_published_cursor_mask) X(plugin_published_cursor_start) \
     X(plugin_published_cursor_end)
+
+#define PLUGIN_SNAPSHOT_V5_FIELDS(X) \
+    X(panel_threshold_position) X(panel_level_active) \
+    X(panel_level_setup_state) X(panel_level_pending) \
+    X(panel_level_pending_value) X(panel_level_value)
+
+#define PLUGIN_SNAPSHOT_V6_FIELDS(X) \
+    X(panel_cell_address_pending) X(panel_cell_address) \
+    X(panel_edit_cursor) X(panel_cursor_command_state) \
+    X(panel_cursor_positioned) X(panel_text_mode_pending)
 
 Eps16ProbeMachine *eps16_probe_machine_create(void) {
     Eps16ProbeMachine *machine = calloc(1, sizeof(*machine));
@@ -781,7 +793,9 @@ size_t eps16_probe_machine_state_size(void) {
            PLUGIN_SNAPSHOT_FIELDS(SNAPSHOT_FIELD_SIZE)
            PLUGIN_SNAPSHOT_V2_FIELDS(SNAPSHOT_FIELD_SIZE)
            PLUGIN_SNAPSHOT_V3_FIELDS(SNAPSHOT_FIELD_SIZE)
-           PLUGIN_SNAPSHOT_V4_FIELDS(SNAPSHOT_FIELD_SIZE);
+           PLUGIN_SNAPSHOT_V4_FIELDS(SNAPSHOT_FIELD_SIZE)
+           PLUGIN_SNAPSHOT_V5_FIELDS(SNAPSHOT_FIELD_SIZE)
+           PLUGIN_SNAPSHOT_V6_FIELDS(SNAPSHOT_FIELD_SIZE);
 #undef SNAPSHOT_FIELD_SIZE
 }
 
@@ -791,7 +805,7 @@ int eps16_probe_machine_save_state(void *data, size_t size) {
     memset(data, 0, size);
     PluginSnapshotHeader *header = (PluginSnapshotHeader *)data;
     memcpy(header->magic, "EPS16ST\0", 8);
-    header->version = 4;
+    header->version = 6;
     header->header_size = sizeof(*header);
     header->total_size = size;
     header->m68k_context_size = m68k_context_size();
@@ -812,6 +826,8 @@ int eps16_probe_machine_save_state(void *data, size_t size) {
     PLUGIN_SNAPSHOT_V2_FIELDS(SNAPSHOT_SAVE_FIELD)
     PLUGIN_SNAPSHOT_V3_FIELDS(SNAPSHOT_SAVE_FIELD)
     PLUGIN_SNAPSHOT_V4_FIELDS(SNAPSHOT_SAVE_FIELD)
+    PLUGIN_SNAPSHOT_V5_FIELDS(SNAPSHOT_SAVE_FIELD)
+    PLUGIN_SNAPSHOT_V6_FIELDS(SNAPSHOT_SAVE_FIELD)
 #undef SNAPSHOT_SAVE_FIELD
 
     Es5505Core saved_es5505 = es5505;
@@ -862,7 +878,15 @@ int eps16_probe_machine_load_state(const void *data, size_t size,
     }
     PluginSnapshotHeader header;
     memcpy(&header, data, sizeof(header));
-    const size_t expected_v4 = eps16_probe_machine_state_size();
+    const size_t expected_v6 = eps16_probe_machine_state_size();
+#define SNAPSHOT_V6_FIELD_SIZE(name) - sizeof(name)
+    const size_t expected_v5 = expected_v6
+        PLUGIN_SNAPSHOT_V6_FIELDS(SNAPSHOT_V6_FIELD_SIZE);
+#undef SNAPSHOT_V6_FIELD_SIZE
+#define SNAPSHOT_V5_FIELD_SIZE(name) - sizeof(name)
+    const size_t expected_v4 = expected_v5
+        PLUGIN_SNAPSHOT_V5_FIELDS(SNAPSHOT_V5_FIELD_SIZE);
+#undef SNAPSHOT_V5_FIELD_SIZE
 #define SNAPSHOT_V4_FIELD_SIZE(name) - sizeof(name)
     const size_t expected_v3 = expected_v4
         PLUGIN_SNAPSHOT_V4_FIELDS(SNAPSHOT_V4_FIELD_SIZE);
@@ -877,9 +901,11 @@ int eps16_probe_machine_load_state(const void *data, size_t size,
 #undef SNAPSHOT_V2_FIELD_SIZE
     const size_t expected = header.version == 1 ? expected_v1
                           : header.version == 2 ? expected_v2
-                          : header.version == 3 ? expected_v3 : expected_v4;
+                          : header.version == 3 ? expected_v3
+                          : header.version == 4 ? expected_v4
+                          : header.version == 5 ? expected_v5 : expected_v6;
     if (memcmp(header.magic, "EPS16ST\0", 8) ||
-        (header.version < 1 || header.version > 4) ||
+        (header.version < 1 || header.version > 6) ||
         header.header_size != sizeof(header) || header.total_size != size ||
         size != expected || header.m68k_context_size != m68k_context_size()) {
         plugin_error(error, error_size, "machine snapshot format is incompatible");
@@ -933,10 +959,27 @@ int eps16_probe_machine_load_state(const void *data, size_t size,
         panel_cursor_segment_mask = 0;
         panel_cursor_full_segments = 0;
     }
+    if (header.version >= 5) {
+        PLUGIN_SNAPSHOT_V5_FIELDS(SNAPSHOT_LOAD_FIELD)
+    } else {
+        panel_threshold_position = -1;
+        panel_level_active = 0;
+        panel_level_setup_state = 0;
+        panel_level_pending = 0;
+        panel_level_pending_value = 0;
+        panel_level_value = 0;
+    }
+    if (header.version >= 6) {
+        PLUGIN_SNAPSHOT_V6_FIELDS(SNAPSHOT_LOAD_FIELD)
+    } else {
+        panel_cell_address_pending = 0;
+        panel_cell_address = 0;
+        panel_edit_cursor = -1;
+        panel_cursor_command_state = 0;
+        panel_cursor_positioned = 0;
+        panel_text_mode_pending = 0;
+    }
 #undef SNAPSHOT_LOAD_FIELD
-    /* Threshold parsing is transient panel transport state and intentionally
-       does not change the version-1/version-2 machine snapshot layout. */
-    panel_threshold_position = -1;
     snapshot_read(&reader, &es5505, sizeof(es5505));
     snapshot_read(&reader, &kpc_device, sizeof(kpc_device));
     if (!reader.valid ||

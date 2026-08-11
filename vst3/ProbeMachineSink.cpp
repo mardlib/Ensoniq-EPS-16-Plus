@@ -39,6 +39,7 @@ bool ProbeMachineSink::beginBlock() {
 
 void ProbeMachineSink::endBlock() {
     if (!blockActive) return;
+    publishDisplay();
     eps16_probe_machine_end(machine);
     blockActive = false;
 }
@@ -164,7 +165,6 @@ void ProbeMachineSink::runUntil(std::uint64_t absoluteCpuCycle) {
         }
         if (count < 32) break;
     }
-    publishDisplay();
 }
 
 void ProbeMachineSink::midi(std::uint8_t status, std::uint8_t data1,

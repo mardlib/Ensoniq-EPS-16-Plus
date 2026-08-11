@@ -1,6 +1,7 @@
 # EPS-16 Plus panel protocol
 
-Status: framing verified; control-to-wire mapping under correction, 2026-07-03.
+Status: framing, control mapping, VFD fields, cursor forms and Sampling Level
+Detect transport verified against original-OS traces, 2026-08-11.
 
 The KPC sends each panel transition as two bytes:
 
@@ -59,6 +60,38 @@ source lights the lower segment in all five cells `LFO  `; RIGHT removes that
 mask and selects the three signed amount cells `+25`. A plain `62 ... 72`
 Filter MODE field produces no cursor segments. No page text or parameter value
 is inspected to make this distinction.
+
+The original OS also has a cursorless direct-address update form. On the
+LOAD/Instrument name-and-volume page it sends the zero-based VFD cell address
+`14`, followed by the two replacement volume characters. A traced change from
+99 to 21 is therefore `14 32 31`; it updates cells 20 and 21 without redrawing
+the instrument name. This sequence contains no `62 60 03` cursor selection,
+so the physical display has no lower-segment cursor on this page. The decoder
+uses one-byte lookahead to distinguish a direct cell address from other low
+transport bytes and renders only the OS-supplied characters.
+
+Name editing uses a second cursor form. The original sequences `63 6a 67` and
+`63 69 65 67` move its single lower-segment cursor forward and backward;
+`63 72 67 72` reasserts it. A `63` followed by a glyph remains an incremental
+write at that selected cell. These meanings agree with both the captured
+EPS-16 Plus OS traffic and the independent hardware sniffer. They are decoded
+as commands, not inferred from the displayed `NAME=` text.
+
+Sampling Level Detect is another original-OS display mode. The exact setup
+frame `15 73 00 f7` enables it; subsequent values `00..0e` are the observed
+number of left-to-right vertical VFD bars. Trigger Sensitivity is independent:
+the OS writes its star with `<one-based cell> 2a` and erases the former star
+with `<one-based cell> 5e`. The meter value is therefore never scaled by the
+trigger setting, and neither value is calculated from the DAW input level.
+Because a bar count and a trigger cell address share the low-byte range, the
+decoder holds one byte of lookahead and commits it only after the following
+transport byte distinguishes the two authentic forms.
+
+The byte after the common `60` prefix selects a text/cursor mode and must not
+be mistaken for a direct cell address. The physical write cursor wraps to cell
+zero after cell 21, as independently observed by the hardware sniffer. This
+combination preserves full-width dialogs such as `PICK SAMPLE INSTRUMENT`
+while allowing standalone low-byte direct updates.
 
 The keypad/display schematic identifies the physical glass as Futaba
 `FIP 22AM5R`: 22 multiplexed alphanumeric cells, each with fourteen directly
@@ -274,10 +307,13 @@ from the rendered `INPUT LEVEL=...` text. The machine regression verifies the
 default LINE state, changes the original field to MIC with Data Entry, and
 restores LINE together with the serialized analog-filter history.
 
-The following `15 73 00 f7` and short low-byte updates are not decoded as a
-17-segment meter yet. Their exact relationship to the physical hardware still
-requires protocol proof, so the VST editor deliberately draws no meter graphic
-and does not infer one from host input amplitude.
+The original Level-Detect program sends `15 73 00 f7` followed by single
+low-byte values `00..0e`. Emulator traces at defined input amplitudes and a
+physical EPS-16 Plus display photograph verify that this value is the number
+of vertical VFD bars lit from left to right. The independently addressed
+`<one-based cell> 2a` marker is the Trigger Sensitivity position; moving it
+does not change the meter value. The VST renders only these original OS/KPC
+values and never infers a meter from host input amplitude.
 
 ENTER must retain the ordinary byte-by-byte display handshake used by OS
 dialogs. Disabling that handshake globally leaves the OS waiting after clearing

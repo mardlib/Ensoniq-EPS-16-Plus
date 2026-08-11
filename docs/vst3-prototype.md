@@ -119,8 +119,10 @@ the verified machine is mechanically extracted from `rom_probe.c`.
   one-based cell/`2a` pair and replaces its previous position atomically.
   Low KPC/VFD bytes are not treated as general character positions.
   Trigger threshold remains distinct from the supplementary Pre-Trigger
-  function. Sampling-level meter segments are not rendered until their
-  hardware protocol has been decoded and independently verified.
+  function. Sampling Level Detect renders the original OS/KPC `00..0e`
+  meter length as vertical VFD bars. Trigger Sensitivity remains the
+  separately addressed star marker; neither value is inferred from host
+  input amplitude.
 - The mono Sampling Input is automatically monitored on both main outputs
   while the original OS is actively polling its sampling ADC, matching the
   hardware Level-Detect and recording path. This board-level monitor is not an

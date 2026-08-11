@@ -89,12 +89,22 @@ static int threshold_position(void) {
         if (display[index] == '*') {
             if (position >= 0) return -2;
             position = index;
-        } else if (display[index] != ' ') {
+        } else if (display[index] != ' ' && display[index] != '|') {
             return -2;
         }
     }
     printf("threshold_position=%d\n", position);
     return position;
+}
+
+static int level_bar_count(void) {
+    char display[23];
+    eps16_probe_machine_display(display);
+    int count = 0;
+    for (int index = 0; index < 22; ++index)
+        if (display[index] == '|') ++count;
+    printf("level_display=|%s| bars=%d\n", display, count);
+    return count;
 }
 
 static int save_external_snapshot(const char *path) {
@@ -173,6 +183,7 @@ int main(int argc, char **argv) {
     printf("monitor_active=%d\n",
            eps16_probe_machine_sampling_monitor_active());
     if (!eps16_probe_machine_sampling_monitor_active()) return 1;
+    if (level_bar_count() <= 0) return 1;
 
     const int threshold_before = threshold_position();
     if (threshold_before < 0) return 1;

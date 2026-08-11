@@ -132,6 +132,7 @@ private:
     juce::Label diskName;
     juce::TextButton keyboardToggle{"KEYBOARD"};
     PianoKeyboard pianoKeyboard;
+    unsigned int timerTicks{};
     bool keyboardExpanded{};
     std::unique_ptr<juce::FileChooser> diskChooser;
     std::vector<std::unique_ptr<PanelButton>> buttons;

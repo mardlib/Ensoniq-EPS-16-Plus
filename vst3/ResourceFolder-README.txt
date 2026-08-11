@@ -1,5 +1,5 @@
-EPS-16 Plus Prototype 1.0.6 external files
-==========================================
+Ensoniq EPS-16 Plus 1.0.7 external files
+=========================================
 
 The universal VST3 supports Intel macOS 10.13 or newer and Apple Silicon
 macOS 11 or newer in the same plug-in bundle.
@@ -35,7 +35,7 @@ and an .img with the expected disk size are detected.
 Typical installed layout:
 
   ~/Library/Audio/Plug-Ins/VST3/
-    EPS-16 Plus Prototype.vst3
+    Ensoniq EPS-16 Plus.vst3
     EPS_files/
       eps16plus-rom.bin
       eps16plus-kpc.bin
@@ -51,9 +51,9 @@ the sampling sequence:
 
   SAMPLE -> TRACK 1 -> wait for * -> ENTER to record -> ENTER to stop
 
-When "PLAY ROOT KEY" appears, send a MIDI note from the Live track. DAW MIDI
-acts as the EPS keyboard; the plug-in intentionally has no separate on-screen
-keyboard.
+When "PLAY ROOT KEY" appears, send a MIDI note from the Live track or use the
+expandable on-screen keyboard. Both use the original EPS keyboard-controller
+path.
 
 If the files were added after the plug-in was opened, remove and insert the
 plug-in once so the authentic machine can initialize from reset.

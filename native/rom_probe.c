@@ -149,7 +149,14 @@ typedef struct {
     uint32_t panel_cursor_segment_mask;
     int panel_cursor_full_segments;
     int panel_noncell_parameter_pending;
+    uint8_t panel_cell_address_pending, panel_cell_address;
+    int panel_edit_cursor;
+    uint8_t panel_cursor_command_state, panel_cursor_positioned;
+    uint8_t panel_text_mode_pending;
     int panel_threshold_position;
+    uint8_t panel_level_active, panel_level_setup_state;
+    uint8_t panel_level_pending, panel_level_pending_value;
+    uint8_t panel_level_value;
     uint16_t panel_indicator_on[3], panel_indicator_flash[3];
     uint8_t panel_indicator_command_pending, panel_last_tx;
     int panel_pick_instrument_seen, panel_file_loaded_seen;
@@ -254,6 +261,7 @@ static void rom_probe_state_defaults(RomProbeState *state) {
     state->panel_display[22] = '\0';
     state->panel_cursor_start = -1;
     state->panel_cursor_end = -1;
+    state->panel_edit_cursor = -1;
     state->panel_threshold_position = -1;
     state->fdc_step_direction = 1;
     state->duart_tx_a_ready = 1;
@@ -338,7 +346,18 @@ static void rom_probe_state_defaults(RomProbeState *state) {
 #define panel_cursor_segment_mask RP(panel_cursor_segment_mask)
 #define panel_cursor_full_segments RP(panel_cursor_full_segments)
 #define panel_noncell_parameter_pending RP(panel_noncell_parameter_pending)
+#define panel_cell_address_pending RP(panel_cell_address_pending)
+#define panel_cell_address RP(panel_cell_address)
+#define panel_edit_cursor RP(panel_edit_cursor)
+#define panel_cursor_command_state RP(panel_cursor_command_state)
+#define panel_cursor_positioned RP(panel_cursor_positioned)
+#define panel_text_mode_pending RP(panel_text_mode_pending)
 #define panel_threshold_position RP(panel_threshold_position)
+#define panel_level_active RP(panel_level_active)
+#define panel_level_setup_state RP(panel_level_setup_state)
+#define panel_level_pending RP(panel_level_pending)
+#define panel_level_pending_value RP(panel_level_pending_value)
+#define panel_level_value RP(panel_level_value)
 #define panel_indicator_on RP(panel_indicator_on)
 #define panel_indicator_flash RP(panel_indicator_flash)
 #define panel_indicator_command_pending RP(panel_indicator_command_pending)
@@ -1498,6 +1517,33 @@ static unsigned int duart_read(unsigned int address) {
     return duart_registers[reg];
 }
 
+static void panel_render_level_meter(uint8_t value) {
+    /* The original Level-Detect program sends a single value 00..0e after
+       15 73 00 f7.  Hardware observation confirms that it is the number of
+       left-to-right vertical level bars.  Trigger sensitivity remains the
+       independently addressed 2a marker and does not affect this value. */
+    panel_level_value = value > 0x0e ? 0x0e : value;
+    for (unsigned int index = 0; index < 22; ++index)
+        panel_display[index] = index < panel_level_value ? '|' : ' ';
+    if (panel_threshold_position >= 0 && panel_threshold_position < 22)
+        panel_display[panel_threshold_position] = '*';
+    panel_display[22] = '\0';
+    panel_display_decimal_mask = 0;
+    panel_cursor_start = -1;
+    panel_cursor_end = -1;
+    panel_cursor_active = 0;
+    panel_cursor_segment_mask = 0;
+    panel_display_dirty = 1;
+    panel_display_last_change_cycle = current_cycle;
+    EPS16_PANEL_DISPLAY_PUBLISHED(panel_display, panel_display_decimal_mask,
+                                  panel_cursor_start, panel_cursor_end,
+                                  panel_cursor_segment_mask);
+    if (live_mode)
+        live_host_display(panel_display, panel_display_decimal_mask,
+                          panel_cursor_start, panel_cursor_end);
+    panel_display_dirty = 0;
+}
+
 static void duart_write(unsigned int address, unsigned int value) {
     unsigned int reg = ((address - DUART_BASE) >> 1) & 15;
     value &= 0xff;
@@ -1541,6 +1587,127 @@ static void duart_write(unsigned int address, unsigned int value) {
         if (live_mode) live_host_panel_tx((uint8_t)value);
         if (value != 'f' && display_trace_byte_count < sizeof(display_trace_bytes))
             display_trace_bytes[display_trace_byte_count++] = (uint8_t)value;
+
+        int cursor_command_byte = 0;
+        int cursor_command_complete = 0;
+        if (panel_cursor_command_state) {
+            cursor_command_byte = 1;
+            if (panel_cursor_command_state == 1 && value == 0x6a) {
+                panel_cursor_command_state = 2;
+            } else if (panel_cursor_command_state == 1 && value == 0x69) {
+                panel_cursor_command_state = 3;
+            } else if (panel_cursor_command_state == 1 && value == 0x72) {
+                panel_cursor_command_state = 5;
+            } else if (panel_cursor_command_state == 2 && value == 0x67) {
+                if (panel_edit_cursor >= 0 && panel_edit_cursor < 21)
+                    ++panel_edit_cursor;
+                panel_cursor = panel_edit_cursor >= 0
+                    ? (size_t)panel_edit_cursor : panel_cursor;
+                panel_cursor_segment_mask = panel_edit_cursor >= 0
+                    ? UINT32_C(1) << panel_edit_cursor : 0;
+                panel_cursor_positioned = 1;
+                panel_cursor_command_state = 0;
+                cursor_command_complete = 1;
+            } else if (panel_cursor_command_state == 3 && value == 0x65) {
+                panel_cursor_command_state = 4;
+            } else if (panel_cursor_command_state == 4 && value == 0x67) {
+                if (panel_edit_cursor > 0) --panel_edit_cursor;
+                panel_cursor = panel_edit_cursor >= 0
+                    ? (size_t)panel_edit_cursor : panel_cursor;
+                panel_cursor_segment_mask = panel_edit_cursor >= 0
+                    ? UINT32_C(1) << panel_edit_cursor : 0;
+                panel_cursor_positioned = 1;
+                panel_cursor_command_state = 0;
+                cursor_command_complete = 1;
+            } else if (panel_cursor_command_state == 5 && value == 0x67) {
+                panel_cursor_command_state = 6;
+            } else if (panel_cursor_command_state == 6 && value == 0x72) {
+                panel_cursor_segment_mask = panel_edit_cursor >= 0
+                    ? UINT32_C(1) << panel_edit_cursor : 0;
+                panel_cursor_command_state = 0;
+                cursor_command_complete = 1;
+            } else if (panel_cursor_command_state == 1) {
+                /* Not a cursor-motion suffix: retain the established 63
+                   incremental field update and process this byte as its first
+                   replacement glyph. */
+                panel_cursor = panel_cursor_start >= 0
+                    ? (size_t)panel_cursor_start : panel_cursor;
+                panel_cursor_active = panel_cursor_start >= 0;
+                panel_cursor_width_pending = 0;
+                panel_cursor_width_known = 1;
+                panel_cursor_full_segments =
+                    panel_cursor_start >= 0 &&
+                    (panel_cursor_segment_mask &
+                     (UINT32_C(1) << panel_cursor_start)) != 0;
+                panel_cursor_command_state = 0;
+                cursor_command_byte = 0;
+            } else {
+                panel_cursor_command_state = 0;
+            }
+        }
+
+        /* Some original-OS pages update a field by sending its zero-based
+           VFD cell address followed directly by replacement characters. For
+           example, LOAD/Instrument volume emits 14 32 31 for "21" in cells
+           20..21. Resolve the low byte only when a following printable glyph
+           proves that it was a cell address; low bytes also serve the meter,
+           indicators and other transport commands. Direct addressing moves
+           the write position but does not invent a visible cursor. */
+        if (panel_cell_address_pending) {
+            if (value >= 0x20 && value <= 0x5f)
+                panel_cursor = panel_cell_address;
+            panel_cell_address_pending = 0;
+        }
+
+        /* A level byte and a trigger cell address occupy the same low-byte
+           range.  Hold one low byte until the next transport byte proves
+           whether it is a meter update or the address in <cell> 2a/5e. */
+        const int threshold_pair = panel_level_pending &&
+            (value == 0x2a || value == 0x5e) &&
+            panel_last_tx == panel_level_pending_value &&
+            panel_level_pending_value >= 1 &&
+            panel_level_pending_value <= 22;
+        if (panel_level_pending) {
+            if (!threshold_pair)
+                panel_render_level_meter(panel_level_pending_value);
+            panel_level_pending = 0;
+        }
+
+        int level_setup_byte = 0;
+        if (value == 'f') {
+            panel_level_active = 0;
+            panel_level_setup_state = 0;
+            panel_level_pending = 0;
+            panel_level_value = 0;
+        } else if (panel_level_setup_state == 0 && value == 0x15) {
+            panel_level_setup_state = 1;
+            level_setup_byte = 1;
+        } else if (panel_level_setup_state == 1 && value == 0x73) {
+            panel_level_setup_state = 2;
+            level_setup_byte = 1;
+        } else if (panel_level_setup_state == 2 && value == 0x00) {
+            panel_level_setup_state = 3;
+            level_setup_byte = 1;
+        } else if (panel_level_setup_state == 3 && value == 0xf7) {
+            panel_level_setup_state = 0;
+            panel_level_active = 1;
+            level_setup_byte = 1;
+        } else if (panel_level_setup_state) {
+            panel_level_setup_state = value == 0x15 ? 1 : 0;
+            level_setup_byte = value == 0x15;
+        }
+
+        const int level_low_is_other_parameter =
+            panel_indicator_command_pending ||
+            panel_cursor_width_pending ||
+            panel_noncell_parameter_pending ||
+            (value == 0x00 && panel_last_tx == 0x72);
+        if (panel_level_active && !level_setup_byte &&
+            !level_low_is_other_parameter && value <= 0x0e) {
+            panel_level_pending = 1;
+            panel_level_pending_value = (uint8_t)value;
+        }
+
         if (value == 0x00 && panel_last_tx == 0x72) {
             panel_cursor = 0;
             panel_cursor_start = -1;
@@ -1551,6 +1718,11 @@ static void duart_write(unsigned int address, unsigned int value) {
             panel_cursor_segment_mask = 0;
             panel_cursor_full_segments = 0;
             panel_noncell_parameter_pending = 0;
+            panel_cell_address_pending = 0;
+            panel_edit_cursor = -1;
+            panel_cursor_command_state = 0;
+            panel_cursor_positioned = 0;
+            panel_text_mode_pending = 0;
             panel_indicator_command_pending = 0;
         } else if (value == 'f') {
             panel_threshold_position = -1;
@@ -1585,8 +1757,19 @@ static void duart_write(unsigned int address, unsigned int value) {
             panel_cursor_segment_mask = 0;
             panel_cursor_full_segments = 0;
             panel_noncell_parameter_pending = 0;
+            panel_cell_address_pending = 0;
+            panel_edit_cursor = -1;
+            panel_cursor_command_state = 0;
+            panel_cursor_positioned = 0;
+            panel_text_mode_pending = 0;
             panel_display_dirty = 1;
             panel_display_last_change_cycle = current_cycle;
+        } else if (cursor_command_byte) {
+            /* Multi-byte 63 cursor command consumed above. */
+        } else if (panel_text_mode_pending) {
+            /* The byte after 60 selects a text/cursor mode. It is command
+               metadata, not a direct cell address. */
+            panel_text_mode_pending = 0;
         } else if (panel_indicator_command_pending) {
             const unsigned int command = panel_indicator_command_pending;
             const unsigned int bank = (command - 0x74U) / 3U;
@@ -1624,6 +1807,7 @@ static void duart_write(unsigned int address, unsigned int value) {
                    (value == 0x12 || value == 0x15)) {
             panel_noncell_parameter_pending = 1;
         } else if (value == 0x62) {
+            const int positioned = panel_cursor_positioned;
             panel_cursor_start = (int)panel_cursor;
             panel_cursor_end = (int)panel_cursor;
             panel_cursor_active = 1;
@@ -1631,15 +1815,21 @@ static void duart_write(unsigned int address, unsigned int value) {
             panel_cursor_width_known = 0;
             panel_cursor_segment_mask = 0;
             panel_cursor_full_segments = 0;
+            if (panel_edit_cursor < 0) panel_edit_cursor = (int)panel_cursor;
+            if (positioned && panel_edit_cursor >= 0)
+                panel_cursor_segment_mask = UINT32_C(1) << panel_edit_cursor;
+            panel_cursor_positioned = 0;
         } else if (value == 0x63 && panel_cursor_start >= 0) {
-            /* Incremental field update: overwrite the current cursor field.
-               Parameter changes use this without transmitting a new frame. */
-            panel_cursor = (size_t)panel_cursor_start;
-            panel_cursor_active = 1;
+            /* 63 is either an incremental field write or the prefix for the
+               original cursor-motion sequences 63 6a 67, 63 69 65 67 and
+               63 72 67 72. The following byte disambiguates them. */
+            panel_cursor_command_state = 1;
+            panel_cursor_active = 0;
             panel_cursor_width_pending = 0;
-            panel_cursor_width_known = 1;
         } else if (value == 0x60 && panel_cursor_active && panel_last_tx == 0x62) {
             panel_cursor_width_pending = 1;
+        } else if (value == 0x60 && !panel_cursor_active) {
+            panel_text_mode_pending = 1;
         } else if (panel_cursor_width_pending && value < 0x20) {
             /* 62 60 03 selects the physical lower segment for this field.
                The following padded characters, not 03, define its width. */
@@ -1691,7 +1881,8 @@ static void duart_write(unsigned int address, unsigned int value) {
                itself. */
             const int position = (int)panel_last_tx - 1;
             if (value == 0x5e) {
-                panel_display[position] = ' ';
+                panel_display[position] =
+                    position < panel_level_value ? '|' : ' ';
                 panel_display_decimal_mask &= ~(UINT32_C(1) << position);
                 if (panel_threshold_position == position)
                     panel_threshold_position = -1;
@@ -1700,7 +1891,9 @@ static void duart_write(unsigned int address, unsigned int value) {
                     panel_threshold_position < 22 &&
                     panel_threshold_position != position &&
                     panel_display[panel_threshold_position] == '*') {
-                    panel_display[panel_threshold_position] = ' ';
+                    panel_display[panel_threshold_position] =
+                        panel_threshold_position < panel_level_value ? '|'
+                                                                   : ' ';
                     panel_display_decimal_mask &=
                         ~(UINT32_C(1) << panel_threshold_position);
                 }
@@ -1710,6 +1903,10 @@ static void duart_write(unsigned int address, unsigned int value) {
             }
             panel_display_dirty = 1;
             panel_display_last_change_cycle = current_cycle;
+        } else if (!panel_cursor_active && !panel_level_active &&
+                   value <= 0x15) {
+            panel_cell_address_pending = 1;
+            panel_cell_address = (uint8_t)value;
         } else if (value >= 0x20 && value <= 0x5f && panel_cursor < 22) {
             panel_display_decimal_mask &= ~(UINT32_C(1) << panel_cursor);
             panel_display[panel_cursor++] = (char)value;
@@ -1721,7 +1918,8 @@ static void duart_write(unsigned int address, unsigned int value) {
         /* Publish complete VFD updates atomically.  Exposing every transport
            byte makes fast hardware frames visibly crawl in a 60 Hz browser,
            even though the physical panel presents the completed field. */
-        if (panel_cursor >= 22 || value == 0x71 || value == 0x72) {
+        if (panel_cursor >= 22 || value == 0x71 || value == 0x72 ||
+            cursor_command_complete) {
             EPS16_PANEL_DISPLAY_PUBLISHED(panel_display,
                                           panel_display_decimal_mask,
                                           panel_cursor_start,
@@ -1731,6 +1929,10 @@ static void duart_write(unsigned int address, unsigned int value) {
                 live_host_display(panel_display, panel_display_decimal_mask,
                                   panel_cursor_start, panel_cursor_end);
             panel_display_dirty = 0;
+            /* The physical 22-cell controller wraps its write cursor after
+               the last cell. Subsequent 60 01 text mode traffic therefore
+               starts at cell zero without treating 01 as an address. */
+            if (panel_cursor >= 22) panel_cursor = 0;
         }
         if (value == 0x72 && getenv("EPS16_TRACE_DISPLAY"))
             fprintf(stderr,
@@ -2162,7 +2364,9 @@ static int illegal_instruction(int opcode) {
 static void instruction_hook(unsigned int pc) {
     if (fdc_reads < 124) return;
     pc &= 0xffffff;
+#if !defined(EPS16_PLUGIN_BUILD)
     sample_live_current_pc = pc;
+#endif
     if (pc == 0xffebc8 && sampling_enter_pending &&
         (uint64_t)current_cycle >= sampling_enter_release_cycle &&
         (m68k_get_reg(NULL, M68K_REG_D2) & 0xff) == 0x25 &&
@@ -2216,6 +2420,7 @@ static void instruction_hook(unsigned int pc) {
         kpc_legacy_cancel_load(&kpc);
         panel_drop_pending_ready();
     }
+#if !defined(EPS16_PLUGIN_BUILD)
     if (pc == 0xffba18 && getenv("EPS16_TRACE_ES5505_KEYON"))
         fprintf(stderr,
                 "voice_volume_source cycle:%lld d0:%08x d1:%08x d2:%08x "
@@ -2335,6 +2540,7 @@ static void instruction_hook(unsigned int pc) {
     } else {
         ++postboot_other_instructions;
     }
+#endif
 }
 
 unsigned int m68k_read_disassembler_16(unsigned int address) {

@@ -5,6 +5,25 @@ Apple Silicon Macs, built as a resizable VST3 instrument.
 
 ![EPS-16 Plus VST3 panel and keyboard](docs/images/eps16-plus-vst3-panel-keyboard.png)
 
+## 1.0.7
+
+- Added the original EPS-16 Plus Level Detect meter. The VST renders the bar
+  count and independent Trigger Sensitivity marker sent by the Ensoniq OS/KPC;
+  it does not calculate a separate host-side level.
+- Fixed live volume-value updates on the LOAD/Instrument page by decoding the
+  original OS direct-cell VFD writes; the page remains cursorless exactly as
+  transmitted by the Ensoniq OS.
+- Fixed live instrument-name editing so cursor movement and replacement
+  characters follow the original OS VFD command stream instead of repeatedly
+  redrawing the first letter.
+- Increased display polling to 30 Hz for responsive metering while keeping
+  ROM/resource discovery and status work on a slower cadence.
+- Reduced plug-in CPU overhead by publishing display state once per DAW audio
+  block and excluding probe-only 68000 diagnostics from release builds.
+- Renamed the public plug-in and package from "EPS-16 Plus Prototype" to
+  "Ensoniq EPS-16 Plus". The VST3 identity remains unchanged so existing DAW
+  projects and presets remain compatible.
+
 ## 1.0.6
 
 - Added direct support for the verified EPS-16 Plus 1.00F split main ROMs.
@@ -76,10 +95,10 @@ menus from text or bypass the sampler's own logic.
 
 ## Download
 
-### [Download EPS-16 Plus Prototype 1.0.6 — macOS Universal VST3](release/EPS-16-Plus-Prototype-macOS-universal.zip)
+### [Download Ensoniq EPS-16 Plus 1.0.7 — macOS Universal VST3](release/Ensoniq-EPS-16-Plus-macOS-universal.zip)
 
 SHA-256:
-`5f070e66089d4bb477dd6e4e36f06adeaf2a3ac482bd4722a4d4a81648c673ad`
+`1e7204eb76468305cccc99797ebc1aa92f47d9920213aaebc672cc3c748c21e1`
 
 The universal package supports Intel Macs with macOS 10.13 High Sierra or
 newer and Apple Silicon Macs with macOS 11 or newer. It requires a VST3-capable
@@ -94,6 +113,8 @@ DAW and contains **VST3 only**; no Audio Unit is included.
 - The original EPS-16 Plus ROM, operating system and KPC panel firmware paths.
 - Authentic 22-cell Futaba-style VFD, indicators, decimal points and
   OS-controlled cursor segments.
+- Original-OS Sampling Level Detect meter and independent Trigger Sensitivity
+  marker, rendered from Ensoniq display traffic rather than host audio levels.
 - ES5505 sample voices with hardware interpolation, looping, envelopes,
   panning, four-pole filtering and per-voice behavior.
 - ES5510 effects and routing, including repeated switching between ROM effects
@@ -157,7 +178,7 @@ The resulting layout should be:
 
 ```text
 ~/Library/Audio/Plug-Ins/VST3/
-  EPS-16 Plus Prototype.vst3
+  Ensoniq EPS-16 Plus.vst3
   EPS_files/
     eps16plus-rom.bin
     eps16plus-kpc.bin
@@ -233,7 +254,7 @@ project state.
 
 ## Known limitations
 
-- This is the **1.0.6** release for Intel macOS 10.13+ and Apple Silicon
+- This is the **1.0.7** release for Intel macOS 10.13+ and Apple Silicon
   macOS 11+.
 - VST3 only; no AU is shipped.
 - The bundle is ad-hoc signed but not Apple-notarized. Use the included
@@ -246,12 +267,13 @@ project state.
 
 ## Validation
 
-The 1.0.6 universal package contains checked x86_64 and arm64 slices with
+The 1.0.7 universal package contains checked x86_64 and arm64 slices with
 deployment targets macOS 10.13 and macOS 11 respectively. It is ad-hoc signed,
 strictly code-sign verified and ZIP-tested. Automated and original-OS
 regressions cover:
 
 - LINE and MIC sampling, threshold movement, recording and audible playback;
+- original-OS Level Detect bars and independent Trigger Sensitivity movement;
 - VFD fields and cursor segment masks;
 - ES5510 effects 10–13, external Waveboy effect downloads and audio-bus routing;
 - bidirectional standard EPS SysEx transport through the emulated MIDI UART;
@@ -323,7 +345,7 @@ cmake -S . -B work/vst3-build-high-sierra \
 cmake --build work/vst3-build-high-sierra --target Eps16Plus_VST3 -j 8
 
 cmake -S . -B work/vst3-build \
-  -DEPS16_X86_64_VST3_BUNDLE="$PWD/work/vst3-build-high-sierra/vst3/Eps16Plus_artefacts/Release/VST3/EPS-16 Plus Prototype.vst3"
+  -DEPS16_X86_64_VST3_BUNDLE="$PWD/work/vst3-build-high-sierra/vst3/Eps16Plus_artefacts/Release/VST3/Ensoniq EPS-16 Plus.vst3"
 
 cmake --build work/vst3-build --target eps16_vst3_universal_package -j 8
 ctest --test-dir work/vst3-build --output-on-failure

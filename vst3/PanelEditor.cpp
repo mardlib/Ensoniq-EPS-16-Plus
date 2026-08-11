@@ -77,6 +77,7 @@ std::uint16_t vfdGlyph(juce::juce_wchar character) {
         case '+': return segG | segI | segL;
         case '/': return segJ | segM;
         case '\\': return segH | segK;
+        case '|': return segI | segL;
         case '*': return segG | segH | segI | segJ | segK | segL | segM;
         case '[': return segA | segD | segE | segF;
         case ']': return segA | segB | segC | segD;
@@ -936,7 +937,7 @@ Eps16PanelEditor::Eps16PanelEditor(Eps16PlusProcessor &processorToUse)
        child has been added so hosts that keep the initial size do not leave
        the entire button matrix at its default zero bounds. */
     resized();
-    startTimerHz(4);
+    startTimerHz(30);
 }
 
 Eps16PanelEditor::~Eps16PanelEditor() {
@@ -1096,20 +1097,26 @@ void Eps16PanelEditor::setKeyboardExpanded(bool expanded) {
 }
 
 void Eps16PanelEditor::timerCallback() {
-    owner.refreshResourcePaths();
-    const juce::File osDisk(owner.getResourcePath(
-        Eps16PlusProcessor::osDiskPathKey));
-    osDiskButton.setEnabled(owner.machineReady() && osDisk.existsAsFile());
-    osDiskButton.setTooltip(osDisk.existsAsFile()
-        ? "Insert OS disk: " + osDisk.getFileName()
-        : "OS disk not found in EPS_files");
-    newDiskButton.setEnabled(owner.machineReady());
-    newDiskButton.setTooltip("Insert a new blank formatted EPS disk");
-    loadDiskButton.setEnabled(owner.machineReady());
-    loadDiskButton.setTooltip("Insert an EPS .IMG or .HFE disk image");
-    saveDiskButton.setEnabled(owner.machineReady());
-    saveDiskButton.setTooltip("Save the inserted disk as .IMG or .HFE");
-    updateDiskName();
+    /* VFD motion needs display-rate polling, especially for the original
+       Level-Detect meter. Resource discovery hashes split ROMs, so retain
+       the previous low-rate cadence for file/status work. */
+    const bool slowUpdate = (timerTicks++ % 8U) == 0;
+    if (slowUpdate) {
+        owner.refreshResourcePaths();
+        const juce::File osDisk(owner.getResourcePath(
+            Eps16PlusProcessor::osDiskPathKey));
+        osDiskButton.setEnabled(owner.machineReady() && osDisk.existsAsFile());
+        osDiskButton.setTooltip(osDisk.existsAsFile()
+            ? "Insert OS disk: " + osDisk.getFileName()
+            : "OS disk not found in EPS_files");
+        newDiskButton.setEnabled(owner.machineReady());
+        newDiskButton.setTooltip("Insert a new blank formatted EPS disk");
+        loadDiskButton.setEnabled(owner.machineReady());
+        loadDiskButton.setTooltip("Insert an EPS .IMG or .HFE disk image");
+        saveDiskButton.setEnabled(owner.machineReady());
+        saveDiskButton.setTooltip("Save the inserted disk as .IMG or .HFE");
+        updateDiskName();
+    }
     vfd.setText(owner.machineDisplay(), juce::dontSendNotification);
     vfd.setCursorSegmentMask(owner.machineCursorSegmentMask());
     vfd.setDecimalMask(owner.machineDecimalMask());
@@ -1131,11 +1138,13 @@ void Eps16PanelEditor::timerCallback() {
         trackLedFlashPhase = nextTrackPhase;
         repaint();
     }
-    status.setText("DAW-driven CPU cycles: " + juce::String(owner.cpuCycles()) +
-                       " | " + owner.machineStatus() +
-                       " | illegal instructions: " +
-                       juce::String(owner.illegalInstructions()),
-                   juce::dontSendNotification);
+    if (slowUpdate)
+        status.setText(
+            "DAW-driven CPU cycles: " + juce::String(owner.cpuCycles()) +
+                " | " + owner.machineStatus() +
+                " | illegal instructions: " +
+                juce::String(owner.illegalInstructions()),
+            juce::dontSendNotification);
 }
 
 void Eps16PanelEditor::paint(juce::Graphics &graphics) {

@@ -133,7 +133,7 @@ juce_add_plugin(Eps16Plus
   PLUGIN_MANUFACTURER_CODE EnIQ
   PLUGIN_CODE Ep16
   FORMATS AU VST3
-  PRODUCT_NAME "EPS-16 Plus Prototype"
+  PRODUCT_NAME "Ensoniq EPS-16 Plus"
   IS_SYNTH TRUE
   NEEDS_MIDI_INPUT TRUE
   NEEDS_MIDI_OUTPUT TRUE
@@ -180,7 +180,7 @@ add_custom_target(eps16_vst3_package
   COMMAND "${CMAKE_COMMAND}"
           "-DSOURCE_BUNDLE=$<TARGET_BUNDLE_DIR:Eps16Plus_VST3>"
           "-DPACKAGE_DIR=${CMAKE_BINARY_DIR}/vst3-package"
-          "-DARCHIVE_NAME=EPS-16-Plus-Prototype-${EPS16_VST3_PACKAGE_ARCH}.zip"
+          "-DARCHIVE_NAME=Ensoniq-EPS-16-Plus-${EPS16_VST3_PACKAGE_ARCH}.zip"
           "-DRESOURCE_README=${CMAKE_CURRENT_SOURCE_DIR}/ResourceFolder-README.txt"
           "-DTHIRD_PARTY_NOTICES=${CMAKE_SOURCE_DIR}/THIRD_PARTY_NOTICES.md"
           "-DJUCE_LICENSE=${EPS16_JUCE_DIR}/LICENSE.md"
@@ -215,7 +215,7 @@ add_custom_target(eps16_au_package
           "-DPACKAGE_DIR=${CMAKE_BINARY_DIR}/au-package"
           "-DRESOURCE_README=${CMAKE_CURRENT_SOURCE_DIR}/ResourceFolder-README.txt"
           "-DBUNDLE_EXTENSION=component"
-          "-DARCHIVE_NAME=EPS-16-Plus-Prototype-AU-arm64.zip"
+          "-DARCHIVE_NAME=Ensoniq-EPS-16-Plus-AU-arm64.zip"
           -P "${CMAKE_CURRENT_SOURCE_DIR}/PackageMac.cmake"
   DEPENDS Eps16Plus_AU
   VERBATIM
