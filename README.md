@@ -95,7 +95,7 @@ menus from text or bypass the sampler's own logic.
 
 ## Download
 
-### [Download Ensoniq EPS-16 Plus 1.0.7 — macOS Universal VST3](release/Ensoniq-EPS-16-Plus-macOS-universal.zip)
+### [Download Ensoniq EPS-16 Plus 1.0.7 — macOS Universal VST3](https://github.com/mardlib/Ensoniq-EPS-16-Plus/releases/download/v1.0.7/Ensoniq-EPS-16-Plus-macOS-universal.zip)
 
 SHA-256:
 `1e7204eb76468305cccc99797ebc1aa92f47d9920213aaebc672cc3c748c21e1`
