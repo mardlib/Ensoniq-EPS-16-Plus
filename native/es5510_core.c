@@ -2,7 +2,11 @@
  * Ensoniq ES5510 execution core.
  *
  * The pipeline and instruction semantics follow the BSD-3-Clause MAME ES5510
- * device by Christian Brunschen, adapted here to a small standalone C core.
+ * device by Christian Brunschen and MAMEdev contributors, adapted here to a
+ * small standalone C core:
+ * https://github.com/mamedev/mame/tree/master/src/devices/cpu/es5510
+ *
+ * See THIRD_PARTY_NOTICES.md for attribution and the BSD-3-Clause notice.
  */
 #include "es5510_core.h"
 

@@ -3,6 +3,12 @@
 Hardware-level emulation of the Ensoniq EPS-16 Plus sampler for Intel and
 Apple Silicon Macs, built as a resizable VST3 instrument.
 
+This project builds on and references open-source work by Karl Stenerud,
+Aaron Giles, Christian Brunschen, MAMEdev, Raw Material Software and their
+contributors. See [Credits and third-party work](#credits-and-third-party-work)
+and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for provenance and
+licence details.
+
 ![EPS-16 Plus VST3 panel and keyboard](docs/images/eps16-plus-vst3-panel-keyboard.png)
 
 ## 1.0.7
@@ -309,10 +315,11 @@ copyrighted Ensoniq binaries are stored in the source tree.
   provides the VST3 wrapper, DAW audio/MIDI integration, plug-in state,
   windowing and GUI framework.
 - [MAME](https://github.com/mamedev/mame) is **not** embedded as the emulator
-  framework. Its Ensoniq drivers and device implementations were valuable
-  hardware/protocol references. The standalone ES5510 execution core adapts
-  pipeline and instruction semantics from the BSD-3-Clause MAME ES5510 device
-  by Christian Brunschen.
+  framework. Its BSD-3-Clause Ensoniq device implementations were important
+  hardware and behavioral references. In particular, the ES5505 voice-chip
+  core is informed by the MAME ES5505/ES5506 work by Aaron Giles, and the
+  standalone ES5510 execution core adapts pipeline and instruction semantics
+  from the MAME ES5510 device by Christian Brunschen.
 - The Ensoniq EPS-16 Plus service manual, legally supplied firmware/disk
   images, real hardware photographs and captured OS/KPC traffic were used to
   verify mappings and behavior. Those copyrighted Ensoniq files are never

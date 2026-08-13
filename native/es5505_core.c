@@ -1,3 +1,13 @@
+/*
+ * Standalone Ensoniq ES5505 voice-chip core.
+ *
+ * Hardware behavior, register semantics, interpolation, filtering, looping
+ * and volume handling are informed by the BSD-3-Clause MAME ES5505/ES5506
+ * device by Aaron Giles and MAMEdev contributors:
+ * https://github.com/mamedev/mame/blob/master/src/devices/sound/es5506.cpp
+ *
+ * See THIRD_PARTY_NOTICES.md for attribution and the BSD-3-Clause notice.
+ */
 #include "es5505_core.h"
 
 #include <string.h>

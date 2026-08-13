@@ -58,10 +58,18 @@ hardware and protocol references:
 
 https://github.com/mamedev/mame/tree/master/src/mame/ensoniq
 
-The standalone `native/es5510_core.c` adapts ES5510 pipeline and instruction
-semantics from the BSD-3-Clause MAME ES5510 device by Christian Brunschen.
+The standalone `native/es5505_core.c` implementation is informed by the
+register behavior, interpolation, filtering, looping and volume model of the
+BSD-3-Clause MAME ES5505/ES5506 device by Aaron Giles:
 
-Copyright Christian Brunschen and MAMEdev contributors.
+https://github.com/mamedev/mame/blob/master/src/devices/sound/es5506.cpp
+
+The standalone `native/es5510_core.c` adapts ES5510 pipeline and instruction
+semantics from the BSD-3-Clause MAME ES5510 device by Christian Brunschen:
+
+https://github.com/mamedev/mame/tree/master/src/devices/cpu/es5510
+
+Copyright Aaron Giles, Christian Brunschen and MAMEdev contributors.
 
 Redistribution and use in source and binary forms, with or without
 modification, are permitted provided that the following conditions are met:
