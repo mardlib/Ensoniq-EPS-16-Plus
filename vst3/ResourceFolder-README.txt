@@ -1,4 +1,4 @@
-Ensoniq EPS-16 Plus 1.0.7 external files
+Ensoniq EPS-16 Plus 1.0.8 external files
 =========================================
 
 The universal VST3 supports Intel macOS 10.13 or newer and Apple Silicon

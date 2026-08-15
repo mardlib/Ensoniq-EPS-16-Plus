@@ -246,6 +246,9 @@ add_test(NAME vst3_bandlimited_resampler
 add_executable(eps16_probe_machine_test ProbeMachineTest.c)
 target_link_libraries(eps16_probe_machine_test PRIVATE eps16_probe_machine)
 
+add_executable(eps16_sampling_clock_test SamplingClockTest.c)
+target_link_libraries(eps16_sampling_clock_test PRIVATE eps16_probe_machine)
+
 add_executable(eps16_command_instrument_workflow_test
   CommandInstrumentWorkflowTest.c
 )

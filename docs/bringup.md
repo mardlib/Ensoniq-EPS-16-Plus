@@ -364,6 +364,21 @@ bandwidth/aliasing. For example selector 2 records at approximately 44.64 kHz
 and uses an increment of 1.5 source samples per 29.761 kHz ES5505 output frame;
 selector 3 records at approximately 29.76 kHz and should use unity increment.
 
+The deterministic/plugin ADC clock must retain an absolute emulated-cycle
+oscillator phase, just as the live path retains an absolute wall-clock phase.
+Scheduling each next conversion relative to the CPU cycle at which the OS
+noticed the preceding conversion accumulated the polling latency. During
+RECORD at selector 3 this produced 28,735.6 conversions per second instead of
+29,761.9 (-3.448 percent), which made the correctly programmed unity playback
+increment sound approximately 60.7 cents sharp. The fixed clock advances from
+the preceding oscillator deadline and drops only ticks missed between polls.
+A dedicated original-OS regression now records on all seven rate selections:
+their measured ADC clocks remain within 0.01 percent of the board divisors and
+the OS still programs the expected ES5505 increments (from 1.5 at selector 2
+through 0.375 at selector 8). The small -1.13 and -3.39 cent residuals at
+selectors 5 and 7 respectively are the original frequency-register
+quantization, not host resampling or a correction table in the emulator.
+
 The ES5510 host model also keeps the writable special registers used by effect
 and sampling overlays: `DLENGTH` (`f5`), `ABASE` (`f6`), `BBASE` (`f7`),
 `DBASE` (`f8`), `SIGREG` (`f9`), `CCR` (`fa`), and `CMR` (`fb`). Their host

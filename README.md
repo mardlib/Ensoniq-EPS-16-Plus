@@ -11,6 +11,15 @@ licence details.
 
 ![EPS-16 Plus VST3 panel and keyboard](docs/images/eps16-plus-vst3-panel-keyboard.png)
 
+## 1.0.8
+
+- Fixed pitch and duration of samples recorded below 44.6 kHz. The emulated
+  ADC now retains the board oscillator's absolute phase instead of accumulating
+  CPU polling latency; the original Ensoniq OS rate table and ES5505 playback
+  increments remain unchanged.
+- Added an original-OS recording regression covering all seven EPS sampling
+  rates and their corresponding ES5505 playback increments.
+
 ## 1.0.7
 
 - Added the original EPS-16 Plus Level Detect meter. The VST renders the bar
@@ -101,10 +110,10 @@ menus from text or bypass the sampler's own logic.
 
 ## Download
 
-### [Download Ensoniq EPS-16 Plus 1.0.7 — macOS Universal VST3](https://github.com/mardlib/Ensoniq-EPS-16-Plus/releases/download/v1.0.7/Ensoniq-EPS-16-Plus-macOS-universal.zip)
+### [Download Ensoniq EPS-16 Plus 1.0.8 — macOS Universal VST3](https://github.com/mardlib/Ensoniq-EPS-16-Plus/releases/download/v1.0.8/Ensoniq-EPS-16-Plus-macOS-universal.zip)
 
 SHA-256:
-`1e7204eb76468305cccc99797ebc1aa92f47d9920213aaebc672cc3c748c21e1`
+`059e0bf3339619248de34d0dbc3c836b8b45e7c9f606c987f90785d278e52e4b`
 
 The universal package supports Intel Macs with macOS 10.13 High Sierra or
 newer and Apple Silicon Macs with macOS 11 or newer. It requires a VST3-capable
@@ -260,7 +269,7 @@ project state.
 
 ## Known limitations
 
-- This is the **1.0.7** release for Intel macOS 10.13+ and Apple Silicon
+- This is the **1.0.8** release for Intel macOS 10.13+ and Apple Silicon
   macOS 11+.
 - VST3 only; no AU is shipped.
 - The bundle is ad-hoc signed but not Apple-notarized. Use the included
@@ -273,12 +282,13 @@ project state.
 
 ## Validation
 
-The 1.0.7 universal package contains checked x86_64 and arm64 slices with
+The 1.0.8 universal package contains checked x86_64 and arm64 slices with
 deployment targets macOS 10.13 and macOS 11 respectively. It is ad-hoc signed,
 strictly code-sign verified and ZIP-tested. Automated and original-OS
 regressions cover:
 
-- LINE and MIC sampling, threshold movement, recording and audible playback;
+- LINE and MIC sampling, all seven hardware recording rates, their original-OS
+  playback increments, threshold movement and audible playback;
 - original-OS Level Detect bars and independent Trigger Sensitivity movement;
 - VFD fields and cursor segment masks;
 - ES5510 effects 10–13, external Waveboy effect downloads and audio-bus routing;

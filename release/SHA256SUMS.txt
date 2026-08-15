@@ -1,2 +1,2 @@
-1e7204eb76468305cccc99797ebc1aa92f47d9920213aaebc672cc3c748c21e1  Ensoniq-EPS-16-Plus-macOS-universal.zip
+059e0bf3339619248de34d0dbc3c836b8b45e7c9f606c987f90785d278e52e4b  Ensoniq-EPS-16-Plus-macOS-universal.zip
 5f070e66089d4bb477dd6e4e36f06adeaf2a3ac482bd4722a4d4a81648c673ad  EPS-16-Plus-Prototype-macOS-universal.zip

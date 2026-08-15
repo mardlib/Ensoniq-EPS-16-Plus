@@ -523,8 +523,16 @@ static uint32_t es5510_sampling_input(void) {
         es5510_input_next_time_ns += period_ns;
     } else {
         uint64_t cycle = bus_cycle_now();
+        const uint64_t period = (uint64_t)divider * 16;
+        if (!es5510_input_next_cycle) es5510_input_next_cycle = cycle;
         if (cycle < es5510_input_next_cycle) return 0;
-        es5510_input_next_cycle = cycle + (uint64_t)divider * 16;
+        /* The board ADC has its own oscillator. CPU polling may observe a
+           completed conversion a few cycles late, but that latency must not
+           move every following conversion by the same amount. Keep the
+           oscillator phase and discard any conversions missed between polls,
+           just as the single hardware latch retains only its newest value. */
+        const uint64_t late = cycle - es5510_input_next_cycle;
+        es5510_input_next_cycle += (late / period + 1) * period;
     }
     int16_t input = 0;
     if ((live_mode || deterministic_host_input) &&
