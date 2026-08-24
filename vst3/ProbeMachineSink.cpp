@@ -74,6 +74,22 @@ bool ProbeMachineSink::insertDisk(const std::string &path,
     return true;
 }
 
+bool ProbeMachineSink::insertScsiCd(const std::string &path) {
+    if (!isReady() || path.empty()) return false;
+    MachineAccess access(machine);
+    if (!access) return false;
+    char error[256]{};
+    if (!eps16_probe_machine_insert_scsi_cd(path.c_str(), error,
+                                             sizeof(error))) {
+        const std::lock_guard<std::mutex> lock(statusMutex);
+        statusText = error[0] ? error : "SCSI CD image insertion failed";
+        return false;
+    }
+    const std::lock_guard<std::mutex> lock(statusMutex);
+    statusText = "SCSI CD image mounted at SCSI 0";
+    return true;
+}
+
 bool ProbeMachineSink::createBlankDisk() {
     if (!isReady()) return false;
     MachineAccess access(machine);
@@ -212,10 +228,10 @@ void ProbeMachineSink::stereoOutput(float &left, float &right,
         return;
     }
     resampler.output(cycle, left, right);
-    /* The EPS-16 Plus routes its mono input directly to both stereo outputs
-       in Level-Detect/recording mode. Host Serial Control 0x48 identifies
-       ES5510 port 1 as the DAC output, so this board monitor is outside the
-       ESP program. Gate it from actual OS ADC polling, never GUI text. */
+    /* The sampling board's mono input monitor is present only while the
+       original OS has selected the Level-Detect VFD mode with its trigger
+       marker. This is the EPS board route, not the disabled VST Main Input
+       bus and not an always-on host dry mix. */
     if (eps16_probe_machine_sampling_monitor_active()) {
         const float gain =
             (float)eps16_probe_machine_master_volume() / 1023.0f;
@@ -277,6 +293,24 @@ std::vector<std::uint8_t> ProbeMachineSink::captureState() const {
     if (size && !eps16_probe_machine_save_state(result.data(), result.size()))
         result.clear();
     return result;
+}
+
+std::vector<std::uint8_t>
+ProbeMachineSink::captureRam(std::uint32_t address, std::size_t size) const {
+    MachineAccess access(machine);
+    std::vector<std::uint8_t> result(isReady() && access ? size : 0);
+    if (!result.empty() && eps16_probe_machine_debug_read_ram(
+            address, result.data(), result.size()) != result.size())
+        result.clear();
+    return result;
+}
+
+bool ProbeMachineSink::debugWriteRam(std::uint32_t address, const void *data,
+                                     std::size_t size) {
+    if (!isReady() || !data || !size) return false;
+    MachineAccess access(machine);
+    return access && eps16_probe_machine_debug_write_ram(address, data, size)
+        == size;
 }
 
 bool ProbeMachineSink::restoreState(const void *data, std::size_t size) {

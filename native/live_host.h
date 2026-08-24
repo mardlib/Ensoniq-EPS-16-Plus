@@ -15,7 +15,9 @@ void live_host_stop(void);
 void live_host_write(const int16_t *interleaved_stereo, size_t frames);
 int live_host_poll_line(char *line, size_t size);
 int live_host_poll_midi(LiveMidiEvent *event);
-int live_host_audio_input_sample(uint32_t target_rate, int16_t *sample);
+int live_host_audio_input_sample(uint32_t target_rate,
+                                 uint64_t conversion_cycle,
+                                 int16_t *sample);
 void live_host_audio_input_prepare_recording(void);
 void live_host_clear_display_hold(void);
 void live_host_display(const char display[23], uint32_t decimal_mask,

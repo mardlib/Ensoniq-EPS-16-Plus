@@ -24,7 +24,7 @@ or numeric scale.
 
 | GUI parameter/control | Source | Read method | Write method | Value range | Scaling | Persistence | Known risks | Test status |
 |---|---|---|---|---|---|---|---|---|
-| Virtual disk image | Panel automation / host media adapter | `OS` reinserts the discovered system disk; `NEW` creates a formatted empty EPS disk; `LOAD` chooses a host file; parsed EPS directory | Mount logical 800 KiB image, issue the physical one-shot disk-change input, accept WD1772/MC68450 sector writes; `SAVE` exports IMG or HFE v1 | `.IMG` / decoded and encoded HFE v1 | None | Mounted bytes are included in VST machine state; explicit Save writes a new external image | Ejecting unsaved in-memory changes, wrong image, or overwriting the wrong host file | Runtime swaps and ED-001/ED-002 directories verified by original OS; blank disk reports `NO INSTRUMENTS`; full-disk HFE encode/decode roundtrip automated; original-OS instrument-save workflow pending live acceptance |
+| Virtual disk image / EFE import | Panel automation / host media adapter | `OS` reinserts the discovered system disk; `NEW` creates a formatted empty EPS disk; `LOAD` chooses an EFE or disk image; parsed EPS directory | Mount logical 800 KiB image, or validate an EFE header and construct its directory/FAT image; issue the physical one-shot disk-change input; accept WD1772/MC68450 sector writes; `SAVE` exports IMG or HFE v1 | `.EFE`, `.IMG`, decoded/encoded HFE v1 | EFE header plus unchanged native 512-byte file blocks | Mounted bytes are included in VST machine state; explicit Save writes a new external image | Ejecting unsaved in-memory changes, malformed/oversized EFE, wrong image, or overwriting the wrong host file | Synthetic import and EpsLin image comparison automated; RX5_CHINA reaches `FILE 1`, loads into two tracks and exposes its original-OS edit pages; blank disk reports `NO INSTRUMENTS`; full-disk HFE roundtrip automated |
 | Master Volume fader | Hardware register | Read ES5505 parallel ADC channel 5 | Set virtual 10-bit analog input | `0..1023` | Left shift 6 to ES5505 bits 15..6 | Runtime/host state; not instrument data | Host gain must not be confused with OS instrument volume | ES5505 ADC read tested; live GUI bridge pending |
 | Data Entry fader | EPS-16 Plus analog input / panel automation | Observe channel 3 during scanner phase `OPR & f0 = 90` and the selected OS field | Map GUI `0..1023` linearly to raw ADC `0..715`; serialize requests and coalesce pending browser events to the newest position | GUI `0..1023`; raw ADC `0..715`; calibrated span `28..687`; OS/Analog Test `0..255` | ROM subtracts `0x0700`, multiplies by `0x00c6`, doubles once, then applies field scaling; 28-count overtravel defeats endpoint hysteresis | Fader position is transient; selected OS parameter owns persistence | Sending the entire raw 10-bit ADC range creates a large upper dead zone; exact calibrated endpoints may not cross a hysteretic boundary after reversal | Original-ROM phase, zero reference, multiplier, and 0..255 scaling verified; repeated-sweep live retest pending |
 | Mode: Load / Command / Edit | Panel automation | Decode OS mode indicator | Send four-byte matrix press/release packet | 3 states | Identity | OS session | Self-test glyphs are not wire indices | All three matrix indices live-verified |
@@ -41,7 +41,7 @@ or numeric scale.
 | Record / Stop-Continue / Play | Physical KPC matrix | Read sequencer status indicator | Raw `03` / `17` / `1d`; Shift-click PLAY sends overlapping `03`+`1d` press/release edges | Trigger/toggle | None | Sequence/song state | Can modify an armed sequence | Service self-test glyphs plus ROM matrix translation verified; original OS creates `SEQUENCE 01`, enters REC, then STOP |
 | DAW MIDI Clock / Transport | MC68681 channel-A MIDI receiver | Original OS reads RHRA/SRA and IRQ3 | Host PPQ/tempo/transport becomes `f8` at 24 PPQN plus `fa/fb/fc` | MIDI realtime | Host sample position to serial byte timing | Original sequencer state | EPS CLOCK SOURCE must be MIDI; host loop/seek restarts transport | Generator timing unit-tested; original OS consumes serialized bytes through RHRA without changing the direct Note-On/Off path |
 | Sample | DAW/browser input + panel automation | Source PCM remains at host rate through the component-derived analog frontend; ADC conversions enter ES5510 serial input 0 and the original sampling program writes the filtered result to GPR 80 | Sampling Input bus or local `getUserMedia`; send Sample packet | Signed mono PCM plus low-byte valid marker | Physical LINE `2.2874x`; MIC `57.5868x` (`25.1758x` relative); original ES5510 cutoff table | Instrument file after save; analog filter history is in plug-in state | The original OS owns MIC/LINE, rate, cutoff, allocation, recording and stop processing | Original-OS LINE/MIC state, circuit response, recording/playback and effect regressions automated |
-| Sampling input monitor | Board audio routing + OS ADC activity | Observe real ES5510 GPR 80 polling | Mono Sampling Input is routed to both main outputs only while polling remains active | Signed mono PCM | Physical VOLUME gain | None | Always-on host dry mix would be incorrect | Level-Detect, RECORD and post-stop gate transitions covered by machine regression |
+| Sampling input monitor | Board Level-Detect route | Observe original level-meter mode, trigger marker and current ADC polling | Route the filtered mono Sampling Input equally to both outputs only on the `#`/Level-Detect page | Signed mono PCM | Physical VOLUME gain | None | Must remain silent on other sampling pages and during RECORD | Level-Detect, RECORD and post-stop gate transitions covered by machine regression |
 | Effect Select / Bypass | Panel automation | Read effect/status display | Send effect button packet | Effect-dependent | OS-defined | Instrument/bank/effect-file dependent | ES5510 execution and routing are implemented; DADR uses the active MEMSIZ address conversion | Original-OS sample recording plus `10/11/12/13/11/10` repeated-switch bus, ESP-return and DAC-output regression passes; ROM 11/13 table-address conversion has a focused unit test |
 | Four-line VFD display | Panel automation | Decode DUART channel-B VFD stream | Read-only GUI mirror | Three printed annunciator rows plus 22 characters | Raw lamp banks + character mapping | None | Unverified lamp indices remain dark; no display-text inference | Characters, decimal points, cursor and verified annunciators live-tested |
 
@@ -91,7 +91,7 @@ Unless a row says otherwise, the common mapping is:
 | Root key / fine tune | Panel automation | EDIT/Pitch/1, fields | Cursor + Data Entry | Note + OS fine units | Note/OS units | Instrument file | Selected wave/layer scope | Manual verified; round-trip pending |
 | LFO pitch amount | Panel automation | EDIT/Pitch/2 | Data Entry | OS-defined bipolar | Display units | Instrument file | Modulation polarity | Manual verified; round-trip pending |
 | ENV1 pitch amount | Panel automation | EDIT/Pitch/3 | Data Entry | OS-defined bipolar | Display units | Instrument file | Modulation polarity | Manual verified; round-trip pending |
-| Random frequency / amount | Panel automation | EDIT/Pitch/5, fields | Cursor + Data Entry | OS-defined | Display units | Instrument file | Non-deterministic modulation | Manual verified; round-trip pending |
+| Random frequency / amount | Panel automation | EDIT/Pitch/5, fields | Cursor + Data Entry | Frequency `0..99`; amount `-99..+99` | Quantized rate code + signed amount | Instrument file | Deterministic global sequence; held independently per voice | Original-OS algorithm, timing, seeds and per-voice application verified |
 | Pitch-bend range | Panel automation | EDIT/Pitch/6 | Data Entry | OS-defined semitones | Semitones | Instrument file | Per-wave versus global bend | Manual verified; round-trip pending |
 | Pitch mod source / amount | Panel automation | EDIT/Pitch/7, fields | Cursor + Data Entry | 15 modulators + bipolar amount | Enum/display units | Instrument file | Source enumeration | Manual verified; round-trip pending |
 | Wavesample key range low/high | Panel automation | EDIT/Pitch/8, fields | Cursor + Data Entry | Keyboard notes | Note-name mapping | Instrument file | Low/high ordering | Manual verified; round-trip pending |
@@ -154,8 +154,59 @@ Unless a row says otherwise, the common mapping is:
 | ES5505 start/end/accumulator | Hardware registers, paged regs 2-5/10-11 | Emulator trace | OS writes only | 31-bit normalized address | 20 integer + internal fraction | Runtime voice | Transient; unsafe as editor state | Core tested; not exposed |
 | ES5505 K1/K2 | Hardware registers, paged regs 7/6 | Emulator trace | OS writes only | `0x0000..0xfff0`, step `0x10` | Chip coefficient, not Hz | Runtime voice | Modulated per voice; not stored cutoff | Core topology tested; not exposed |
 | ES5505 left/right volume | Hardware registers, paged regs 8/9 | Emulator trace | OS writes only | `0x00..0xff` | 4-bit exponent + 4-bit mantissa | Runtime voice | Exponential, dynamic, downstream value | Volume law tested; not exposed |
-| OS RAM parameter structures | RAM address | Targeted before/after snapshots | No GUI writes permitted yet | Unknown | Unknown | OS session / file-dependent | Layout, relocation, selection context unknown | Discovery not started |
+| F1 cutoff (wavesample) | Relocatable sample-RAM object | Slot table + instrument wavesample table + fixed object offset | Diagnostic direct RAM write only | `0..255` | Stored as big-endian `value << 8` | Instrument file; save/reload not tested | Address changes whenever objects relocate; production write path and live-audio response remain unverified | Direct read/write and original-OS display verified for two instrument slots, Layer 1 / WS 1 |
+| Other OS RAM parameter structures | RAM address | Targeted before/after snapshots | No GUI writes permitted yet | Unknown | Unknown | OS session / file-dependent | Layout, relocation, selection context unknown | Discovery not started |
 | Enhanced resonance/features | Enhanced engine | N/A | N/A | N/A | N/A | N/A | Outside current scope | Not exposed / deferred |
+
+## Original-OS random pitch modulation
+
+The `RANDM` pitch source is generated entirely by the original EPS-16 Plus OS,
+not by the ES5505 and not by emulator-added noise. Reverse engineering against
+the running original OS found two global 16-bit state words at `$0001EC` and
+`$0001EE`. Their boot values are `$06E1` and `$000A`; the same four bytes occur
+at offset `$1FEC` in `EPS130OS.img`.
+
+Whenever a voice needs a new random value, the OS executes this exact
+big-endian, 16-bit wrapping recurrence:
+
+```text
+B = (B + A) & $FFFF
+A = (A + B) & $FFFF       ; this uses the newly updated B
+voice.random = signed16(A)
+```
+
+The recurrence is the code at ROM `$C0C100..$C0C110`. For the OS seed it
+returns to the complete `(A,B)` state after 49,152 generated values. Its signed
+output is bipolar with an exactly zero mean across that period. This is a
+deterministic additive generator, so loading the same initial state reproduces
+the sequence exactly.
+
+There is one shared generator, but each active voice has its own held value
+and countdown in its runtime voice structure. A refresh consumes the next
+value from the shared sequence. Consequently simultaneous notes do not receive
+the same modulation, and voice allocation and refresh order influence which
+random value each note gets.
+
+The original OS services the countdown every 1 ms. The wavesample stores an
+internal 7-bit rate code `r`; the hold time is:
+
+```text
+r = 1..127: 128 - r milliseconds
+r = 0:      65,536 milliseconds
+```
+
+The displayed `RANDOM FREQ=0..99` is a quantized editor representation of that
+internal code and is not a millisecond value. The display can map more than
+one internal representation onto the same number, so code derived from the
+live wavesample object is authoritative.
+
+For pitch, the OS treats `voice.random` as signed, multiplies it by the signed
+wavesample random-amount coefficient, shifts the product, and adds it to the
+other pitch modulators before converting the combined pitch to the ES5505
+frequency register. The held random value itself is stepped: no smoothing or
+interpolation is added. The global stream, per-voice sample-and-hold timing,
+bipolar signed result and interaction with voice allocation explain much of
+the source's musically useful, organic behavior.
 
 ## Required promotion test for a direct RAM mapping
 
@@ -171,3 +222,40 @@ of the following pass:
    output, then restore the original value.
 6. Save and reload the owning file and confirm persistence.
 7. Add an automated regression test before the GUI uses the RAM path.
+
+## Confirmed diagnostic mapping: Filter 1 cutoff
+
+The original EPS-16 Plus OS does not keep one fixed cutoff address per
+instrument slot. Instrument and wavesample objects are relocatable. The
+diagnostic probe therefore resolves the live object graph on every run:
+
+1. Read the selected instrument object's absolute base address from the
+   eight-entry OS slot table. Slot 1 is at `$FFDC9C`, Slot 2 at `$FFDC98`,
+   continuing downward in four-byte steps through Slot 8 at `$FFDC80`.
+2. In the instrument block, resolve the packed relative pointer for the
+   required wavesample from the table beginning at block word 61. Each of the
+   128 table entries occupies two words. The allocator header preceding the
+   instrument block is five words (10 bytes).
+3. Add the unpacked relative offset to the instrument object base.
+4. Filter 1 cutoff is the 16-bit word at wavesample object offset `$BC`.
+   The stored representation is big-endian `cutoff << 8`.
+
+The August 11, 2026 probe loaded the original ED-001 bank and independently
+measured two unrelated objects:
+
+| Slot / instrument | Instrument base | WS 1 relative offset | WS 1 base | F1 cutoff address | Measured OS edits |
+|---|---:|---:|---:|---:|---|
+| 1 / FLUTE 1 | `$7D9000` | `$009580` | `$7E2580` | `$7E263C` | `$7F00 -> $8000 -> $8100 -> $7F00` |
+| 2 / PIANO 241 | `$7BAE00` | `$000370` | `$7BB170` | `$7BB22C` | `$4600 -> $4700 -> $4800 -> $4600` |
+
+The same diagnostic then wrote the two addresses directly, without panel,
+MIDI, or SysEx input. Both values coexisted and were read back by the original
+OS display: Slot 1 showed `F1=100`; Slot 2 showed `F1=90`. This proves
+independent direct addressing of two loaded instrument slots.
+
+Cutoff is owned by a wavesample, not by the layer record itself. A layer's
+effective cutoff therefore depends on which wavesample(s) it selects. Layer
+membership/ranges, live voice response, dirty-file state, save/reload behavior,
+and safe audio-thread scheduling are deliberately still unverified. The
+diagnostic write API must not be exposed as a production GUI control until
+those remaining promotion tests pass.

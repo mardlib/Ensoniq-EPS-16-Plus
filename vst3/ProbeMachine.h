@@ -28,6 +28,8 @@ int eps16_probe_machine_initialize_split_rom(const char *upper_rom_path,
                                              char *error, size_t error_size);
 int eps16_probe_machine_insert_disk(const char *disk_path,
                                     char *error, size_t error_size);
+int eps16_probe_machine_insert_scsi_cd(const char *image_path,
+                                       char *error, size_t error_size);
 int eps16_probe_machine_create_blank_disk(char *error, size_t error_size);
 int eps16_probe_machine_save_disk(const char *disk_path, int hfe_format,
                                   char *error, size_t error_size);
@@ -76,6 +78,16 @@ size_t eps16_probe_machine_state_size(void);
 int eps16_probe_machine_save_state(void *data, size_t size);
 int eps16_probe_machine_load_state(const void *data, size_t size,
                                    char *error, size_t error_size);
+
+/* Read-only diagnostic access for original-OS RAM mapping probes. This never
+   reads hardware registers and is not used by the plug-in GUI or audio path. */
+size_t eps16_probe_machine_debug_read_ram(uint32_t address, void *data,
+                                          size_t size);
+/* Diagnostic-only direct RAM write used by mapping probes. The caller must
+   already own the machine context; this is deliberately not a plug-in control
+   API and does not emulate a CPU or peripheral write. */
+size_t eps16_probe_machine_debug_write_ram(uint32_t address, const void *data,
+                                           size_t size);
 
 #ifdef __cplusplus
 }

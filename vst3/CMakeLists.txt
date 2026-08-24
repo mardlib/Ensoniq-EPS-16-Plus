@@ -112,6 +112,8 @@ add_dependencies(musashi_vst musashi)
 add_library(eps16_probe_machine STATIC
   ProbeMachine.c
   ProbeMachine.h
+  HostInputResampler.c
+  HostInputResampler.h
   ../native/kpc_legacy.c
   ../native/kpc_firmware.c
   ../native/kpc_device.c
@@ -192,6 +194,8 @@ add_custom_target(eps16_vst3_package
 
 set(EPS16_X86_64_VST3_BUNDLE "" CACHE PATH
     "Built x86_64 VST3 bundle used to create the universal macOS package")
+set(EPS16_X86_64_AU_BUNDLE "" CACHE PATH
+    "Built x86_64 AU bundle used to create the universal macOS package")
 if(EPS16_X86_64_VST3_BUNDLE)
   add_custom_target(eps16_vst3_universal_package
     COMMAND "${CMAKE_COMMAND}"
@@ -206,6 +210,26 @@ if(EPS16_X86_64_VST3_BUNDLE)
     DEPENDS Eps16Plus_VST3
     VERBATIM
     COMMENT "Creating verified universal macOS 10.13+/11+ VST3 package"
+  )
+endif()
+
+if(EPS16_X86_64_VST3_BUNDLE AND EPS16_X86_64_AU_BUNDLE)
+  add_custom_target(eps16_universal_plugin_package
+    COMMAND "${CMAKE_COMMAND}"
+            "-DARM_BUNDLE=$<TARGET_BUNDLE_DIR:Eps16Plus_VST3>"
+            "-DX86_BUNDLE=${EPS16_X86_64_VST3_BUNDLE}"
+            "-DARM_AU_BUNDLE=$<TARGET_BUNDLE_DIR:Eps16Plus_AU>"
+            "-DX86_AU_BUNDLE=${EPS16_X86_64_AU_BUNDLE}"
+            "-DPACKAGE_DIR=${CMAKE_BINARY_DIR}/universal-plugin-package"
+            "-DARCHIVE_NAME=Ensoniq-EPS-16-Plus-${PROJECT_VERSION}-macOS-universal.zip"
+            "-DRESOURCE_README=${CMAKE_CURRENT_SOURCE_DIR}/ResourceFolder-README.txt"
+            "-DINSTALLER=${CMAKE_CURRENT_SOURCE_DIR}/InstallUniversalMac.command"
+            "-DTHIRD_PARTY_NOTICES=${CMAKE_SOURCE_DIR}/THIRD_PARTY_NOTICES.md"
+            "-DJUCE_LICENSE=${EPS16_JUCE_DIR}/LICENSE.md"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/PackageUniversalPluginsMac.cmake"
+    DEPENDS Eps16Plus_VST3 Eps16Plus_AU
+    VERBATIM
+    COMMENT "Creating verified universal AU and VST3 package"
   )
 endif()
 
@@ -243,6 +267,17 @@ target_compile_options(eps16_bandlimited_resampler_test PRIVATE
 add_test(NAME vst3_bandlimited_resampler
          COMMAND eps16_bandlimited_resampler_test)
 
+add_executable(eps16_host_input_resampler_test
+  HostInputResampler.c
+  HostInputResamplerTest.c
+)
+target_link_libraries(eps16_host_input_resampler_test PRIVATE m)
+target_compile_options(eps16_host_input_resampler_test PRIVATE
+  -Wall -Wextra -Wpedantic
+)
+add_test(NAME vst3_host_input_resampler
+         COMMAND eps16_host_input_resampler_test)
+
 add_executable(eps16_probe_machine_test ProbeMachineTest.c)
 target_link_libraries(eps16_probe_machine_test PRIVATE eps16_probe_machine)
 
@@ -270,6 +305,19 @@ add_executable(eps16_disk_load_workflow_test
   BandlimitedResampler.cpp
 )
 target_link_libraries(eps16_disk_load_workflow_test PRIVATE
+  eps16_vst3_bridge
+  eps16_probe_machine
+)
+
+add_executable(eps16_scsi_cd_workflow_test ScsiCdWorkflowTest.c)
+target_link_libraries(eps16_scsi_cd_workflow_test PRIVATE eps16_probe_machine)
+
+add_executable(eps16_filter_cutoff_ram_probe
+  FilterCutoffRamProbe.cpp
+  ProbeMachineSink.cpp
+  BandlimitedResampler.cpp
+)
+target_link_libraries(eps16_filter_cutoff_ram_probe PRIVATE
   eps16_vst3_bridge
   eps16_probe_machine
 )

@@ -53,17 +53,24 @@ private:
         PanelButton(Eps16PlusProcessor &, juce::String label,
                     std::uint8_t rawCode, bool mappingKnown = true);
         void setShiftChordCode(std::uint8_t rawCode);
+        void triggerShortcut();
+        void showActivationGlow();
+        void updateActivationGlow(double nowMs);
+        void paintButton(juce::Graphics &, bool highlighted,
+                         bool down) override;
         void mouseDown(const juce::MouseEvent &) override;
         void mouseUp(const juce::MouseEvent &) override;
         void mouseExit(const juce::MouseEvent &) override;
 
     private:
+        void startActivationGlow();
         void releaseIfNeeded();
         Eps16PlusProcessor &processor;
         const std::uint8_t code;
         std::uint8_t shiftChordCode{0xff};
         bool pressed{};
         bool shiftChordPressed{};
+        double activationGlowStartedMs{-1.0};
     };
 
     class DiskButton final : public juce::Button {

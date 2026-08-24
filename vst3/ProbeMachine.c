@@ -1,4 +1,5 @@
 #include "ProbeMachine.h"
+#include "HostInputResampler.h"
 
 #include <string.h>
 
@@ -36,6 +37,7 @@ typedef struct {
     unsigned int timer_irqs;
     int16_t input_sample;
     int input_valid;
+    Eps16HostInputResampler host_input_resampler;
     float output_left, output_right;
     Eps16ProbeAudioFrame audio_queue[PLUGIN_AUDIO_QUEUE_CAPACITY];
     size_t audio_queue_read, audio_queue_write;
@@ -68,6 +70,8 @@ static _Thread_local Eps16ProbeMachine *plugin_current_machine;
 #define plugin_timer_irqs (plugin_current_machine->plugin.timer_irqs)
 #define plugin_input_sample (plugin_current_machine->plugin.input_sample)
 #define plugin_input_valid (plugin_current_machine->plugin.input_valid)
+#define plugin_host_input_resampler \
+    (plugin_current_machine->plugin.host_input_resampler)
 #define plugin_output_left (plugin_current_machine->plugin.output_left)
 #define plugin_output_right (plugin_current_machine->plugin.output_right)
 #define plugin_audio_queue (plugin_current_machine->plugin.audio_queue)
@@ -184,6 +188,9 @@ static void plugin_capture_keyon(unsigned int voice) {
     X(panel_edit_cursor) X(panel_cursor_command_state) \
     X(panel_cursor_positioned) X(panel_text_mode_pending)
 
+#define PLUGIN_SNAPSHOT_V7_FIELDS(X) \
+    X(disk_sector_status) X(fdc_error_status)
+
 Eps16ProbeMachine *eps16_probe_machine_create(void) {
     Eps16ProbeMachine *machine = calloc(1, sizeof(*machine));
     if (!machine) return NULL;
@@ -197,6 +204,11 @@ Eps16ProbeMachine *eps16_probe_machine_create(void) {
 
 void eps16_probe_machine_destroy(Eps16ProbeMachine *machine) {
     if (!machine) return;
+    RomProbeState *const previous_state = rom_probe_state;
+    rom_probe_state = &machine->core;
+    if (scsi_image) fclose(scsi_image);
+    scsi_image = NULL;
+    rom_probe_state = previous_state;
     free(machine);
 }
 
@@ -476,7 +488,7 @@ int eps16_probe_machine_insert_disk(const char *disk_path,
     }
     if (!disk_path || !*disk_path || !load_disk(disk_path)) {
         plugin_error(error, error_size,
-                     "disk must be a valid EPS .IMG or HFE v1 image");
+                     "file must be a valid EPS .EFE, .IMG or HFE v1 image");
         return 0;
     }
     disk_change_pending = 1;
@@ -484,6 +496,34 @@ int eps16_probe_machine_insert_disk(const char *disk_path,
     fdc_physical_track = 0;
     fdc_sector = 0;
     fdc_remaining = 0;
+    fdc_error_status = 0;
+    if (error && error_size) error[0] = '\0';
+    return 1;
+}
+
+int eps16_probe_machine_insert_scsi_cd(const char *image_path,
+                                       char *error, size_t error_size) {
+    if (!plugin_initialized) {
+        plugin_error(error, error_size, "machine is not initialized");
+        return 0;
+    }
+    if (!image_path || !*image_path || !scsi_mount_image(image_path)) {
+        plugin_error(error, error_size,
+                     "SCSI image must contain complete 512-byte blocks");
+        return 0;
+    }
+    scsi_buffer_position = 0;
+    scsi_buffer_size = 0;
+    scsi_stream_remaining = 0;
+    scsi_dma_padding_remaining = 0;
+    /* The ROM records discovered/OS-bearing/formatted SCSI targets in these
+       three bitmaps. A medium inserted after its one-time boot scan needs the
+       ID-0 bits published just as a completed device rescan would do; no CPU,
+       sample, sequencer, or filesystem state is reset. The original CHANGE
+       STORAGE DEVICE command still reads and validates the mounted medium. */
+    low_ram[0x311] |= 0x01;
+    low_ram[0x312] |= 0x01;
+    low_ram[0x313] |= 0x01;
     if (error && error_size) error[0] = '\0';
     return 1;
 }
@@ -497,12 +537,15 @@ int eps16_probe_machine_create_blank_disk(char *error, size_t error_size) {
         plugin_error(error, error_size, "cannot create blank EPS disk");
         return 0;
     }
+    memset(disk_sector_status, EPS16_SECTOR_READABLE,
+           sizeof(disk_sector_status));
     disk_loaded = 1;
     disk_change_pending = 1;
     fdc_track = 0;
     fdc_physical_track = 0;
     fdc_sector = 0;
     fdc_remaining = 0;
+    fdc_error_status = 0;
     if (error && error_size) error[0] = '\0';
     return 1;
 }
@@ -676,6 +719,8 @@ void eps16_probe_machine_analog(unsigned int channel, uint16_t value) {
 void eps16_probe_machine_sampling_input_rate(double sample_rate) {
     if (!plugin_current_machine) return;
     sampling_input_circuit_set_rate(&sampling_input_circuit, sample_rate);
+    eps16_host_input_resampler_prepare(&plugin_host_input_resampler,
+                                       sample_rate, CPU_CLOCK_RATE);
 }
 
 float eps16_probe_machine_sampling_input(float left, float right) {
@@ -687,6 +732,8 @@ float eps16_probe_machine_sampling_input(float left, float right) {
         &sampling_input_circuit, mono, low_ram[0x0211] == 0);
     plugin_input_sample = (int16_t)lrintf(filtered * 32767.0f);
     plugin_input_valid = 1;
+    eps16_host_input_resampler_push(&plugin_host_input_resampler,
+                                    plugin_executed, filtered);
     return filtered;
 }
 
@@ -722,7 +769,8 @@ uint16_t eps16_probe_machine_indicator_flash(unsigned int bank) {
 
 int eps16_probe_machine_sampling_monitor_active(void) {
     if (!plugin_initialized || !plugin_input_valid ||
-        !es5510_input_last_poll_cycle)
+        !es5510_input_last_poll_cycle || !panel_level_active ||
+        panel_threshold_position < 0)
         return 0;
     const uint64_t now = bus_cycle_now();
     return now >= es5510_input_last_poll_cycle &&
@@ -785,6 +833,60 @@ float eps16_probe_machine_output_peak(void) {
     return (float)audio_peak / 524288.0f;
 }
 
+size_t eps16_probe_machine_debug_read_ram(uint32_t address, void *data,
+                                          size_t size) {
+    if (!plugin_initialized || !data || !size) return 0;
+    address &= 0xffffff;
+    if (address < LOW_RAM_SIZE) {
+        const size_t available = LOW_RAM_SIZE - address;
+        const size_t count = size < available ? size : available;
+        memcpy(data, low_ram + address, count);
+        return count;
+    }
+    if (address >= SAMPLE_RAM_BASE && address < SAMPLE_RAM_BASE + SAMPLE_RAM_SIZE) {
+        const size_t offset = address - SAMPLE_RAM_BASE;
+        const size_t available = SAMPLE_RAM_SIZE - offset;
+        const size_t count = size < available ? size : available;
+        memcpy(data, sample_ram + offset, count);
+        return count;
+    }
+    if (address >= OS_RAM_BASE && address < OS_RAM_BASE + OS_RAM_SIZE) {
+        const size_t offset = address - OS_RAM_BASE;
+        const size_t available = OS_RAM_SIZE - offset;
+        const size_t count = size < available ? size : available;
+        memcpy(data, os_ram + offset, count);
+        return count;
+    }
+    return 0;
+}
+
+size_t eps16_probe_machine_debug_write_ram(uint32_t address, const void *data,
+                                           size_t size) {
+    if (!plugin_initialized || !data || !size) return 0;
+    address &= 0xffffff;
+    if (address < LOW_RAM_SIZE) {
+        const size_t available = LOW_RAM_SIZE - address;
+        const size_t count = size < available ? size : available;
+        memcpy(low_ram + address, data, count);
+        return count;
+    }
+    if (address >= SAMPLE_RAM_BASE && address < SAMPLE_RAM_BASE + SAMPLE_RAM_SIZE) {
+        const size_t offset = address - SAMPLE_RAM_BASE;
+        const size_t available = SAMPLE_RAM_SIZE - offset;
+        const size_t count = size < available ? size : available;
+        memcpy(sample_ram + offset, data, count);
+        return count;
+    }
+    if (address >= OS_RAM_BASE && address < OS_RAM_BASE + OS_RAM_SIZE) {
+        const size_t offset = address - OS_RAM_BASE;
+        const size_t available = OS_RAM_SIZE - offset;
+        const size_t count = size < available ? size : available;
+        memcpy(os_ram + offset, data, count);
+        return count;
+    }
+    return 0;
+}
+
 size_t eps16_probe_machine_state_size(void) {
     if (!plugin_initialized) return 0;
 #define SNAPSHOT_FIELD_SIZE(name) + sizeof(name)
@@ -795,7 +897,8 @@ size_t eps16_probe_machine_state_size(void) {
            PLUGIN_SNAPSHOT_V3_FIELDS(SNAPSHOT_FIELD_SIZE)
            PLUGIN_SNAPSHOT_V4_FIELDS(SNAPSHOT_FIELD_SIZE)
            PLUGIN_SNAPSHOT_V5_FIELDS(SNAPSHOT_FIELD_SIZE)
-           PLUGIN_SNAPSHOT_V6_FIELDS(SNAPSHOT_FIELD_SIZE);
+           PLUGIN_SNAPSHOT_V6_FIELDS(SNAPSHOT_FIELD_SIZE)
+           PLUGIN_SNAPSHOT_V7_FIELDS(SNAPSHOT_FIELD_SIZE);
 #undef SNAPSHOT_FIELD_SIZE
 }
 
@@ -805,7 +908,7 @@ int eps16_probe_machine_save_state(void *data, size_t size) {
     memset(data, 0, size);
     PluginSnapshotHeader *header = (PluginSnapshotHeader *)data;
     memcpy(header->magic, "EPS16ST\0", 8);
-    header->version = 6;
+    header->version = 7;
     header->header_size = sizeof(*header);
     header->total_size = size;
     header->m68k_context_size = m68k_context_size();
@@ -828,6 +931,7 @@ int eps16_probe_machine_save_state(void *data, size_t size) {
     PLUGIN_SNAPSHOT_V4_FIELDS(SNAPSHOT_SAVE_FIELD)
     PLUGIN_SNAPSHOT_V5_FIELDS(SNAPSHOT_SAVE_FIELD)
     PLUGIN_SNAPSHOT_V6_FIELDS(SNAPSHOT_SAVE_FIELD)
+    PLUGIN_SNAPSHOT_V7_FIELDS(SNAPSHOT_SAVE_FIELD)
 #undef SNAPSHOT_SAVE_FIELD
 
     Es5505Core saved_es5505 = es5505;
@@ -879,8 +983,12 @@ int eps16_probe_machine_load_state(const void *data, size_t size,
     PluginSnapshotHeader header;
     memcpy(&header, data, sizeof(header));
     const size_t expected_v6 = eps16_probe_machine_state_size();
+#define SNAPSHOT_V7_FIELD_SIZE(name) - sizeof(name)
+    const size_t expected_v6_legacy = expected_v6
+        PLUGIN_SNAPSHOT_V7_FIELDS(SNAPSHOT_V7_FIELD_SIZE);
+#undef SNAPSHOT_V7_FIELD_SIZE
 #define SNAPSHOT_V6_FIELD_SIZE(name) - sizeof(name)
-    const size_t expected_v5 = expected_v6
+    const size_t expected_v5 = expected_v6_legacy
         PLUGIN_SNAPSHOT_V6_FIELDS(SNAPSHOT_V6_FIELD_SIZE);
 #undef SNAPSHOT_V6_FIELD_SIZE
 #define SNAPSHOT_V5_FIELD_SIZE(name) - sizeof(name)
@@ -903,9 +1011,10 @@ int eps16_probe_machine_load_state(const void *data, size_t size,
                           : header.version == 2 ? expected_v2
                           : header.version == 3 ? expected_v3
                           : header.version == 4 ? expected_v4
-                          : header.version == 5 ? expected_v5 : expected_v6;
+                          : header.version == 5 ? expected_v5
+                          : header.version == 6 ? expected_v6_legacy : expected_v6;
     if (memcmp(header.magic, "EPS16ST\0", 8) ||
-        (header.version < 1 || header.version > 6) ||
+        (header.version < 1 || header.version > 7) ||
         header.header_size != sizeof(header) || header.total_size != size ||
         size != expected || header.m68k_context_size != m68k_context_size()) {
         plugin_error(error, error_size, "machine snapshot format is incompatible");
@@ -979,6 +1088,13 @@ int eps16_probe_machine_load_state(const void *data, size_t size,
         panel_cursor_positioned = 0;
         panel_text_mode_pending = 0;
     }
+    if (header.version >= 7) {
+        PLUGIN_SNAPSHOT_V7_FIELDS(SNAPSHOT_LOAD_FIELD)
+    } else {
+        memset(disk_sector_status, EPS16_SECTOR_READABLE,
+               sizeof(disk_sector_status));
+        fdc_error_status = 0;
+    }
 #undef SNAPSHOT_LOAD_FIELD
     snapshot_read(&reader, &es5505, sizeof(es5505));
     snapshot_read(&reader, &kpc_device, sizeof(kpc_device));
@@ -1029,6 +1145,7 @@ int eps16_probe_machine_load_state(const void *data, size_t size,
                    ? disk_image + header.fdc_data_offset : NULL;
     plugin_audio_queue_read = 0;
     plugin_audio_queue_write = 0;
+    eps16_host_input_resampler_reset(&plugin_host_input_resampler);
     plugin_last_keyon_frequency = 0;
     midi_rx_read = midi_rx_write = midi_rx_count = 0;
     midi_wire_read = midi_wire_write = midi_wire_count = 0;
@@ -1063,10 +1180,26 @@ int live_host_poll_line(char *line, size_t size) {
     (void)line; (void)size; return 0;
 }
 int live_host_poll_midi(LiveMidiEvent *event) { (void)event; return 0; }
-int live_host_audio_input_sample(uint32_t target_rate, int16_t *sample) {
-    (void)target_rate;
+int live_host_audio_input_sample(uint32_t target_rate,
+                                 uint64_t conversion_cycle,
+                                 int16_t *sample) {
     if (!plugin_input_valid || !sample) return 0;
-    *sample = plugin_input_sample;
+    /* ADC timing and target_rate remain owned by the original OS-selected
+       board divider in rom_probe.c. Reconstruct the filtered host waveform at
+       that conversion's exact emulated cycle instead of holding the preceding
+       DAW frame until the next callback. */
+    float reconstructed = 0.0f;
+    if (target_rate && eps16_host_input_resampler_sample(
+            &plugin_host_input_resampler, conversion_cycle, &reconstructed)) {
+        if (reconstructed > 1.0f) reconstructed = 1.0f;
+        if (reconstructed < -1.0f) reconstructed = -1.0f;
+        *sample = (int16_t)lrintf(reconstructed * 32767.0f);
+    } else {
+        /* Direct machine probes may intentionally hold one input value without
+           supplying a continuous DAW stream. Preserve that deterministic
+           diagnostic behavior during initial filter warm-up. */
+        *sample = plugin_input_sample;
+    }
     return 1;
 }
 void live_host_audio_input_prepare_recording(void) {}

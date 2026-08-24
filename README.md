@@ -1,7 +1,7 @@
-# Ensoniq EPS-16 Plus VST3 Emulator
+# Ensoniq EPS-16 Plus Audio Unit and VST3 Emulator
 
 Hardware-level emulation of the Ensoniq EPS-16 Plus sampler for Intel and
-Apple Silicon Macs, built as a resizable VST3 instrument.
+Apple Silicon Macs, built as a resizable Audio Unit and VST3 instrument.
 
 This project builds on and references open-source work by Karl Stenerud,
 Aaron Giles, Christian Brunschen, MAMEdev, Raw Material Software and their
@@ -10,6 +10,21 @@ and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for provenance and
 licence details.
 
 ![EPS-16 Plus VST3 panel and keyboard](docs/images/eps16-plus-vst3-panel-keyboard.png)
+
+## 1.0.9
+
+- Added a universal Audio Unit v2 build alongside the universal VST3.
+- Added EFE instrument import through the emulator LOAD control and more
+  tolerant handling of physical HFE captures with damaged or unformatted
+  sectors.
+- Added experimental read-only SCSI CD-ROM ISO mounting for loading instruments
+  from EPS CD-ROM libraries and their ISO backups, including reliable repeated
+  instrument replacement from the same image.
+- Added experimental Control/Option plus number-key shortcuts for original EPS
+  CMD and EDIT pages, with a brief visual acknowledgement glow.
+- Fixed repeated PLAY and STOP panel actions after recording a sequence.
+- Kept host sampling input aligned to the emulated ADC conversion clock and
+  added regression coverage for host resampling and original EPS sample rates.
 
 ## 1.0.8
 
@@ -110,14 +125,13 @@ menus from text or bypass the sampler's own logic.
 
 ## Download
 
-### [Download Ensoniq EPS-16 Plus 1.0.8 — macOS Universal VST3](https://github.com/mardlib/Ensoniq-EPS-16-Plus/releases/download/v1.0.8/Ensoniq-EPS-16-Plus-macOS-universal.zip)
+### [Download Ensoniq EPS-16 Plus 1.0.9 — macOS Universal AU + VST3](https://github.com/mardlib/Ensoniq-EPS-16-Plus/releases/download/v1.0.9/Ensoniq-EPS-16-Plus-1.0.9-macOS-universal.zip)
 
 SHA-256:
-`059e0bf3339619248de34d0dbc3c836b8b45e7c9f606c987f90785d278e52e4b`
+`6be6cf64fe3abe4429240315c52732dc7ca15767521e249d04bfabd744de63bd`
 
-The universal package supports Intel Macs with macOS 10.13 High Sierra or
-newer and Apple Silicon Macs with macOS 11 or newer. It requires a VST3-capable
-DAW and contains **VST3 only**; no Audio Unit is included.
+Both plug-in formats support Intel Macs with macOS 10.13 High Sierra or newer
+and Apple Silicon Macs with macOS 11 or newer.
 
 > **Original Ensoniq files are required.** ROM, KPC firmware and operating
 > system disk images are copyrighted and are not included in this repository
@@ -147,8 +161,8 @@ DAW and contains **VST3 only**; no Audio Unit is included.
 - Independent plug-in instances and complete DAW project/preset restore,
   including sample RAM, instruments, effects, display/parser state and mounted
   disk.
-- EPS floppy images: insert IMG or HFE, swap multiple disks, create a blank
-  disk and save as IMG or hardware-compatible HFE.
+- EPS media: insert IMG or HFE disks, import an individual EFE instrument,
+  swap media, create a blank disk and save as IMG or hardware-compatible HFE.
 - Resizable, hardware-inspired panel with mouse-operated Data Entry, volume,
   arrow keys and original button layout.
 
@@ -221,7 +235,12 @@ direct, stable keyboard path.
 When the plug-in window has keyboard focus, the computer arrow keys operate
 the four physical EPS arrow buttons. Use Left/Right to move between menu pages
 or fields and Up/Down to change the value selected by the original OS. The
-keys are not captured when another window has focus.
+keys are not captured when another window has focus. **Experimental:**
+Control+1 through Control+0 press CMD followed by the matching numbered EPS
+page key. Option+1 through Option+0 press EDIT followed by the numbered key and
+open that original-OS edit page.
+Mouse and shortcut presses show a brief cyan acknowledgement glow without
+changing or imitating the original EPS status LEDs.
 
 The plug-in provides a stereo main output and an additional stereo
 `Sampling Input`. In Ableton Live, route audio to that input with the
@@ -249,11 +268,18 @@ the large original EPS `LOAD` mode button.
 | --- | --- |
 | `OS` | Reinsert the configured EPS operating-system disk. |
 | `NEW` | Insert a freshly formatted blank 800 KiB EPS disk. |
-| `LOAD` | Insert an existing IMG or HFE v1 disk image. |
+| `LOAD` | Import an EFE instrument or insert an IMG/HFE v1 floppy or ISO SCSI image. |
 | `SAVE` | Export the mounted disk, including OS-written changes, as IMG or HFE. |
 
 Use IMG for convenient backups and emulator interchange. Use HFE when the
 disk is intended for a compatible Gotek/HxC setup or real EPS hardware.
+Loading an EFE creates a temporary EPS disk in memory, writes the native file
+into its directory/FAT, and presents that disk to the original operating
+system; the EFE payload itself is not interpreted by the plug-in.
+**Experimental:** Read-only SCSI ISO mounting is intended for loading
+instruments from EPS CD-ROM libraries and their ISO backups through the
+original EPS LOAD pages. Insert the ISO with the emulator's small `LOAD`
+button.
 Each plug-in instance owns an independent virtual drive. The mounted media
 name is shown above the four disk icons.
 
@@ -269,9 +295,11 @@ project state.
 
 ## Known limitations
 
-- This is the **1.0.8** release for Intel macOS 10.13+ and Apple Silicon
+- This is the **1.0.9** release for Intel macOS 10.13+ and Apple Silicon
   macOS 11+.
-- VST3 only; no AU is shipped.
+- The Audio Unit v2 and VST3 bundles both contain Intel and Apple Silicon code.
+- SCSI ISO mounting and the Control/Option number-key shortcuts are
+  experimental.
 - The bundle is ad-hoc signed but not Apple-notarized. Use the included
   Terminal installer so it is prepared before the DAW scans it for the first
   time.
@@ -282,10 +310,10 @@ project state.
 
 ## Validation
 
-The 1.0.8 universal package contains checked x86_64 and arm64 slices with
-deployment targets macOS 10.13 and macOS 11 respectively. It is ad-hoc signed,
-strictly code-sign verified and ZIP-tested. Automated and original-OS
-regressions cover:
+The 1.0.9 Audio Unit v2 and VST3 bundles contain checked x86_64 and arm64
+slices with deployment targets macOS 10.13 and macOS 11 respectively. They are
+ad-hoc signed, strictly code-sign verified and ZIP-tested. Automated and
+original-OS regressions cover:
 
 - LINE and MIC sampling, all seven hardware recording rates, their original-OS
   playback increments, threshold movement and audible playback;
@@ -294,8 +322,9 @@ regressions cover:
 - ES5510 effects 10–13, external Waveboy effect downloads and audio-bus routing;
 - bidirectional standard EPS SysEx transport through the emulated MIDI UART;
 - Pitch Wheel, Mod Wheel, MIDI pressure transport and Note Off;
-- sequencer RECORD/PLAY/STOP and DAW-clock serialization;
-- IMG/HFE I/O, disk swapping and blank-disk creation;
+- sequencer RECORD/PLAY/STOP, repeated transport actions and DAW-clock serialization;
+- IMG/HFE I/O, EFE import, experimental SCSI ISO loading, disk swapping and
+  blank-disk creation;
 - snapshot compatibility, VST state and three independent instances;
 - absence of illegal 68000 instructions in the tested workflows.
 
@@ -310,11 +339,17 @@ foundation used to build the plug-in:
 - [Parameter and ownership mapping](docs/parameter-mapping.md)
 - [KPC firmware reference](docs/kpc-reference.md)
 
-The disk tools can decode HFE v1, validate MFM sectors and CRCs, rebuild the
-logical 800 KiB EPS image, inspect the Ensoniq filesystem and create
-hardware-compatible HFE output. Development builds use the external
+The disk tools can decode HFE v1, validate MFM sectors and CRCs, import native
+EFE exchange files into a temporary logical 800 KiB EPS image, inspect the
+Ensoniq filesystem and create hardware-compatible HFE output. Development builds use the external
 [Musashi](https://github.com/kstenerud/Musashi) 68000 core and JUCE; no
 copyrighted Ensoniq binaries are stored in the source tree.
+
+The plug-in also accepts physical HxC/Gotek captures containing unused missing
+or CRC-damaged sectors. Readable sectors are mounted unchanged; the emulated
+WD1772 reports the recorded CRC or record-not-found condition only if the EPS
+OS accesses a damaged sector. Strict command-line extraction remains available
+for archival validation and continues to reject incomplete images.
 
 ## Credits and third-party work
 
@@ -359,16 +394,16 @@ cmake -S . -B work/vst3-build-high-sierra \
   -DCMAKE_OSX_ARCHITECTURES=x86_64 \
   -DCMAKE_OSX_DEPLOYMENT_TARGET=10.13
 
-cmake --build work/vst3-build-high-sierra --target Eps16Plus_VST3 -j 8
+cmake --build work/vst3-build-high-sierra --target Eps16Plus_VST3 Eps16Plus_AU -j 8
 
 cmake -S . -B work/vst3-build \
-  -DEPS16_X86_64_VST3_BUNDLE="$PWD/work/vst3-build-high-sierra/vst3/Eps16Plus_artefacts/Release/VST3/Ensoniq EPS-16 Plus.vst3"
+  -DEPS16_X86_64_VST3_BUNDLE="$PWD/work/vst3-build-high-sierra/vst3/Eps16Plus_artefacts/Release/VST3/Ensoniq EPS-16 Plus.vst3" \
+  -DEPS16_X86_64_AU_BUNDLE="$PWD/work/vst3-build-high-sierra/vst3/Eps16Plus_artefacts/Release/AU/Ensoniq EPS-16 Plus.component"
 
-cmake --build work/vst3-build --target eps16_vst3_universal_package -j 8
+cmake --build work/vst3-build --target eps16_universal_plugin_package -j 8
 ctest --test-dir work/vst3-build --output-on-failure
 ctest --test-dir work/vst3-build-high-sierra --output-on-failure
 ```
 
 The universal package target verifies both architectures and their deployment
-targets, signs the combined bundle and creates one VST3 archive without
-shipping an Audio Unit.
+targets, signs both bundles and creates one AU + VST3 archive.

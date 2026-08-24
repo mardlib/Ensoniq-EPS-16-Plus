@@ -397,11 +397,10 @@ routing rather than a browser reverb substitute.
 During effects, Host Serial Control `48` configures serial port 1 as the main
 DAC output while ports 0, 2, and 3 accept the three ES5505 effect buses. During
 sampling, the uploaded overlay instead consumes the mono ADC at serial input 0
-and writes its filtered result to GPR `80` for the CPU. The hardware's automatic
-sampling monitor remains a separate board route. In the VST adapter it is
-active only while the original OS performs current GPR `80` conversions, is
-sent equally to both main outputs, follows the same analog MIC/LINE frontend,
-and then follows the physical master-volume ADC.
+and writes its filtered result to GPR `80` for the CPU. The board sampling
+monitor is routed to both plug-in outputs only while the original OS has
+selected the Level-Detect VFD mode with its trigger marker. It is silent on
+the other sampling pages and during the blank-display RECORD phase.
 Main-board U41 is the hardware source multiplexer in front of ES5510 serial
 input 0. Its A input is ES5505 `DSER0` (Bus 1), its B input is the mono ADC
 `A/DATA`, and its `SAMPEN` select is MC68681 output OP2. MC68681 output pins
@@ -430,6 +429,15 @@ it as a raw 20-bit index stored the tables at `dfe00..` while the programs read
 `03dfe..`. The focused unit test verifies that `3dfe00` maps to `03dfe` for
 `MEMSIZ=0000ff`. The original-OS recording regression now produces distinct,
 nonzero ESP returns for `10,11,12,13,11,10` without changing bus routing.
+
+Individual Ensoniq File Exchange instruments can now enter through the same
+virtual drive without an external converter. The importer validates the
+512-byte EFE header and its duplicate block counts, creates a blank 800 KiB EPS
+directory/FAT image, and copies every native file block unchanged. Its output
+matches the allocated directory, FAT and payload bytes of an EpsLin-generated
+reference image. With `RX5_CHINA.EFE`, the unmodified OS displays
+`FILE 1  RX5 CHINA`, loads the instrument into two tracks through the ordinary
+`ENTER`/track workflow, and retains edits after reselecting the track.
 
 The normal live ENTER click produces the verified press/hold/release panel
 packet. Actual recording is activated by the ENTER release edge, while an

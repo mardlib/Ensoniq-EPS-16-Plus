@@ -627,7 +627,10 @@ int live_host_poll_midi(LiveMidiEvent *event) {
     return available;
 }
 
-int live_host_audio_input_sample(uint32_t target_rate, int16_t *result) {
+int live_host_audio_input_sample(uint32_t target_rate,
+                                 uint64_t conversion_cycle,
+                                 int16_t *result) {
+    (void)conversion_cycle;
     pthread_mutex_lock(&audio_input_mutex);
     int16_t sample = 0;
     int available = 0;
@@ -731,8 +734,11 @@ void live_host_write(const int16_t *samples, size_t frames) {
 }
 int live_host_poll_line(char *line, size_t size) { (void)line; (void)size; return 0; }
 int live_host_poll_midi(LiveMidiEvent *event) { (void)event; return 0; }
-int live_host_audio_input_sample(uint32_t target_rate, int16_t *sample) {
+int live_host_audio_input_sample(uint32_t target_rate,
+                                 uint64_t conversion_cycle,
+                                 int16_t *sample) {
     (void)target_rate;
+    (void)conversion_cycle;
     if (sample) *sample = 0;
     return 0;
 }

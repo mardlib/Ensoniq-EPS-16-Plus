@@ -135,10 +135,18 @@ int main(int argc, char **argv) {
     bool stopEnabled = false;
     bool playEnabled = false;
     bool playChordDocumented = false;
+    int numberedShortcutTooltips = 0;
+    juce::TextButton *firstPageButton = nullptr;
+    juce::TextButton *commandModeButton = nullptr;
     for (int index = 0; index < editor->getNumChildComponents(); ++index) {
         auto *button = dynamic_cast<juce::TextButton *>(
             editor->getChildComponent(index));
         if (!button) continue;
+        if (button->getTooltip().contains("Control+") &&
+            button->getTooltip().contains("Option+"))
+            ++numberedShortcutTooltips;
+        if (button->getName() == "1 / ENV 1") firstPageButton = button;
+        if (button->getName() == "CMD") commandModeButton = button;
         if (button->getName() == "RECORD") recordEnabled = button->isEnabled();
         if (button->getName() == "STOP / CONT") stopEnabled = button->isEnabled();
         if (button->getName() == "PLAY") {
@@ -147,7 +155,8 @@ int main(int argc, char **argv) {
         }
     }
     if (!recordEnabled || !stopEnabled || !playEnabled ||
-        !playChordDocumented)
+        !playChordDocumented || numberedShortcutTooltips != 10 ||
+        !firstPageButton || !commandModeButton)
         return 1;
     dataEntry->setValue(1023, juce::sendNotificationSync);
     if (dataEntry->getValue() != 1023) return 1;
@@ -157,6 +166,43 @@ int main(int argc, char **argv) {
         !editor->keyPressed(juce::KeyPress(juce::KeyPress::rightKey)) ||
         editor->keyPressed(juce::KeyPress('A')))
         return 1;
+    const juce::ModifierKeys command(juce::ModifierKeys::commandModifier);
+    const juce::ModifierKeys control(juce::ModifierKeys::ctrlModifier);
+    const juce::ModifierKeys option(juce::ModifierKeys::altModifier);
+    const auto beforeGlow = firstPageButton->createComponentSnapshot(
+        firstPageButton->getLocalBounds());
+    const auto beforeCommandGlow = commandModeButton->createComponentSnapshot(
+        commandModeButton->getLocalBounds());
+    if (!editor->keyPressed(juce::KeyPress('1', control, '1')))
+        return 25;
+    const auto afterGlow = firstPageButton->createComponentSnapshot(
+        firstPageButton->getLocalBounds());
+    const auto afterCommandGlow = commandModeButton->createComponentSnapshot(
+        commandModeButton->getLocalBounds());
+    auto imageChecksum = [](const juce::Image &image) {
+        std::uint64_t checksum = 0;
+        for (int y = 0; y < image.getHeight(); ++y)
+            for (int x = 0; x < image.getWidth(); ++x)
+                checksum = checksum * 33U + image.getPixelAt(x, y).getARGB();
+        return checksum;
+    };
+    if (!beforeGlow.isValid() || !afterGlow.isValid() ||
+        !beforeCommandGlow.isValid() || !afterCommandGlow.isValid() ||
+        imageChecksum(beforeGlow) == imageChecksum(afterGlow) ||
+        imageChecksum(beforeCommandGlow) == imageChecksum(afterCommandGlow))
+        return 26;
+    for (const auto digit : std::string("1234567890")) {
+        if (!editor->keyPressed(juce::KeyPress(digit, control, digit)) ||
+            !editor->keyPressed(juce::KeyPress(digit, option, digit)))
+            return 25;
+    }
+    const juce::ModifierKeys commandShift(
+        juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier);
+    if (editor->keyPressed(juce::KeyPress('1')) ||
+        editor->keyPressed(juce::KeyPress('1', command, '1')) ||
+        editor->keyPressed(juce::KeyPress('A', command, 'A')) ||
+        editor->keyPressed(juce::KeyPress('1', commandShift, '1')))
+        return 25;
     editor->focusLost(juce::Component::focusChangedDirectly);
     dataEntry->setValue(512, juce::dontSendNotification);
 

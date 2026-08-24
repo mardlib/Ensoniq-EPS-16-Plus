@@ -33,6 +33,8 @@ enum {
     DUART_SIZE = 0x20,
     FDC_BASE = 0x2C0000,
     FDC_SIZE = 8,
+    SCSI_BASE = 0x300000,
+    SCSI_SIZE = 4,
     DISK_SIZE = 80 * 2 * 10 * 512,
     MAX_TRACES = 256,
     PANEL_RX_SIZE = 256,
@@ -161,9 +163,11 @@ typedef struct {
     uint8_t panel_indicator_command_pending, panel_last_tx;
     int panel_pick_instrument_seen, panel_file_loaded_seen;
     uint8_t disk_image[DISK_SIZE];
+    uint8_t disk_sector_status[EPS16_LOGICAL_SECTOR_COUNT];
     int disk_loaded, disk_change_pending;
     uint8_t fdc_track, fdc_physical_track, fdc_sector, fdc_data_register;
     uint8_t fdc_last_command;
+    uint8_t fdc_error_status;
     int load_trace_enabled, fdc_step_direction;
     uint8_t *fdc_data;
     size_t fdc_remaining;
@@ -192,6 +196,16 @@ typedef struct {
     int dmac_irq_channel;
     unsigned int dmac_transfers;
     int dmac_pcl_level[4];
+    uint8_t scsi_registers[32];
+    uint8_t scsi_address;
+    uint8_t scsi_aux_status;
+    uint8_t scsi_buffer[256];
+    size_t scsi_buffer_position;
+    size_t scsi_buffer_size;
+    FILE *scsi_image;
+    uint64_t scsi_image_size;
+    uint64_t scsi_stream_remaining;
+    uint8_t scsi_dma_padding_remaining;
     DmaTrace dma_trace[256];
     size_t dma_trace_count;
     FdcEvent fdc_events[256];
@@ -278,6 +292,9 @@ static void rom_probe_state_defaults(RomProbeState *state) {
     state->dmac_irq_channel = -1;
     for (unsigned int channel = 0; channel < 4; ++channel)
         state->dmac_pcl_level[channel] = 1;
+    /* The SP-2 asserts the channel-1 PCL transition used by the boot ROM as
+       its installed-card indication.  A target medium may be mounted later. */
+    state->dmac_registers[1][0] = 0x02;
     state->es5505_trace_writes = -1;
 }
 
@@ -365,6 +382,7 @@ static void rom_probe_state_defaults(RomProbeState *state) {
 #define panel_pick_instrument_seen RP(panel_pick_instrument_seen)
 #define panel_file_loaded_seen RP(panel_file_loaded_seen)
 #define disk_image RP(disk_image)
+#define disk_sector_status RP(disk_sector_status)
 #define disk_loaded RP(disk_loaded)
 #define disk_change_pending RP(disk_change_pending)
 #define fdc_track RP(fdc_track)
@@ -372,6 +390,7 @@ static void rom_probe_state_defaults(RomProbeState *state) {
 #define fdc_sector RP(fdc_sector)
 #define fdc_data_register RP(fdc_data_register)
 #define fdc_last_command RP(fdc_last_command)
+#define fdc_error_status RP(fdc_error_status)
 #define load_trace_enabled RP(load_trace_enabled)
 #define fdc_step_direction RP(fdc_step_direction)
 #define fdc_data RP(fdc_data)
@@ -409,6 +428,16 @@ static void rom_probe_state_defaults(RomProbeState *state) {
 #define dmac_irq_channel RP(dmac_irq_channel)
 #define dmac_transfers RP(dmac_transfers)
 #define dmac_pcl_level RP(dmac_pcl_level)
+#define scsi_registers RP(scsi_registers)
+#define scsi_address RP(scsi_address)
+#define scsi_aux_status RP(scsi_aux_status)
+#define scsi_buffer RP(scsi_buffer)
+#define scsi_buffer_position RP(scsi_buffer_position)
+#define scsi_buffer_size RP(scsi_buffer_size)
+#define scsi_image RP(scsi_image)
+#define scsi_image_size RP(scsi_image_size)
+#define scsi_stream_remaining RP(scsi_stream_remaining)
+#define scsi_dma_padding_remaining RP(scsi_dma_padding_remaining)
 #define dma_trace RP(dma_trace)
 #define dma_trace_count RP(dma_trace_count)
 #define fdc_events RP(fdc_events)
@@ -501,6 +530,7 @@ static uint32_t es5510_sampling_input(void) {
     if (selector < 2 || selector > 8) selector = 3; /* normal 29.8 kHz default */
     unsigned int divider = selector * 7;
     uint32_t target_rate = 625000U / divider;
+    uint64_t conversion_cycle = bus_cycle_now();
     if (live_mode && !deterministic_host_input) {
         /* A live ADC is clocked by the physical sampling oscillator, not by
            however quickly the host happens to execute 68000 instructions.
@@ -532,11 +562,17 @@ static uint32_t es5510_sampling_input(void) {
            oscillator phase and discard any conversions missed between polls,
            just as the single hardware latch retains only its newest value. */
         const uint64_t late = cycle - es5510_input_next_cycle;
-        es5510_input_next_cycle += (late / period + 1) * period;
+        /* The ADC latch contains the newest conversion completed before the
+           CPU poll. Reconstruct the input at that oscillator edge, not at the
+           later and instruction-dependent poll cycle. Sampling at the poll
+           introduced deterministic phase jitter and strong non-harmonic
+           sidebands, especially at the 29.76 kHz selection. */
+        conversion_cycle = es5510_input_next_cycle + (late / period) * period;
+        es5510_input_next_cycle = conversion_cycle + period;
     }
     int16_t input = 0;
     if ((live_mode || deterministic_host_input) &&
-        !live_host_audio_input_sample(target_rate, &input))
+        !live_host_audio_input_sample(target_rate, conversion_cycle, &input))
         return 0;
     if (live_mode && !deterministic_host_input) {
         if (fabs(sampling_input_circuit.sample_rate - target_rate) > 0.5)
@@ -1654,17 +1690,24 @@ static void duart_write(unsigned int address, unsigned int value) {
             }
         }
 
-        /* Some original-OS pages update a field by sending its zero-based
-           VFD cell address followed directly by replacement characters. For
-           example, LOAD/Instrument volume emits 14 32 31 for "21" in cells
-           20..21. Resolve the low byte only when a following printable glyph
-           proves that it was a cell address; low bytes also serve the meter,
-           indicators and other transport commands. Direct addressing moves
-           the write position but does not invent a visible cursor. */
+        /* Some original-OS pages update a field by sending its zero-based VFD
+           cell address followed by replacement characters. For example,
+           LOAD/Instrument volume emits 14 32 31 for "21" in cells 20..21.
+           Sequencer transport can insert the normal text-mode prefix between
+           the address and field marker, as in 00 60 01 62. Preserve the
+           pending address across that exact command path and resolve it when
+           62 begins the field. Low bytes also serve the meter, indicators and
+           other transport commands, so every other non-printable successor
+           still cancels the candidate. Direct addressing moves the write
+           position but does not invent a visible cursor. */
         if (panel_cell_address_pending) {
-            if (value >= 0x20 && value <= 0x5f)
+            const int text_mode_prefix = value == 0x60;
+            const int text_mode_argument = panel_text_mode_pending;
+            const int addressed_field = value == 0x62 && panel_last_tx == 0x01;
+            if ((value >= 0x20 && value <= 0x5f) || addressed_field)
                 panel_cursor = panel_cell_address;
-            panel_cell_address_pending = 0;
+            if (!text_mode_prefix && !text_mode_argument)
+                panel_cell_address_pending = 0;
         }
 
         /* A level byte and a trigger cell address occupy the same low-byte
@@ -1923,11 +1966,15 @@ static void duart_write(unsigned int address, unsigned int value) {
             if (panel_cursor_active && !panel_cursor_width_known)
                 panel_cursor_end = (int)panel_cursor;
         }
-        /* Publish complete VFD updates atomically.  Exposing every transport
-           byte makes fast hardware frames visibly crawl in a 60 Hz browser,
-           even though the physical panel presents the completed field. */
-        if (panel_cursor >= 22 || value == 0x71 || value == 0x72 ||
-            cursor_command_complete) {
+        /* Publish complete VFD updates atomically. A full OS page can contain
+           several fields terminated by 71/72; publishing each terminator made
+           the 30 Hz plug-in GUI expose partially rebuilt ENV pages that the
+           physical VFD's persistence never presents as separate frames.
+           Complete 22-cell frames publish here. Short field writes publish
+           after the existing 10 ms UART-idle boundary in live_service or the
+           plug-in run loop. Cursor-motion commands remain immediately visible
+           because they do not expose an incomplete text rebuild. */
+        if (panel_cursor >= 22 || cursor_command_complete) {
             EPS16_PANEL_DISPLAY_PUBLISHED(panel_display,
                                           panel_display_decimal_mask,
                                           panel_cursor_start,
@@ -2021,6 +2068,7 @@ static unsigned int fdc_read(unsigned int address) {
     if (reg == 0)
     {
         unsigned int status = fdc_remaining ? 0x03
+            : fdc_error_status ? fdc_error_status
             : (((fdc_last_command & 0x80) == 0 ||
                 (fdc_last_command & 0xf0) == 0xd0) &&
                fdc_physical_track == 0 ? 0x04 : 0x00);
@@ -2074,6 +2122,7 @@ static void fdc_write(unsigned int address, unsigned int value) {
         return;
     }
     fdc_last_command = (uint8_t)value;
+    fdc_error_status = 0;
     dmac_pcl_write(0, 1); /* accepting a command clears the previous INTRQ */
     if (dma_trace_count < sizeof(dma_trace) / sizeof(dma_trace[0]))
         dma_trace[dma_trace_count++] = (DmaTrace){
@@ -2125,6 +2174,13 @@ static void fdc_write(unsigned int address, unsigned int value) {
             fdc_events[fdc_event_count++] =
                 (FdcEvent){(uint8_t)value, fdc_physical_track, fdc_sector,
                            (uint8_t)side, block, 0};
+        }
+        if (disk_sector_status[block] != EPS16_SECTOR_READABLE) {
+            fdc_data = NULL;
+            fdc_remaining = 0;
+            fdc_error_status = disk_sector_status[block];
+            dmac_pcl_write(0, 0);
+            return;
         }
         fdc_data = &disk_image[block * 512];
         fdc_remaining = 512;
@@ -2253,6 +2309,38 @@ static void dmac_complete(unsigned int channel) {
         dmac_irq_channel = (int)channel;
 }
 
+static void scsi_raise_interrupt(void) {
+    scsi_aux_status |= 0x80;
+    dmac_pcl_write(1, 0); /* WD33C93 INT is wired to channel-1 PCL. */
+}
+
+static void scsi_clear_interrupt(void) {
+    scsi_aux_status &= (uint8_t)~0x80;
+    dmac_pcl_write(1, 1);
+}
+
+static uint8_t scsi_dma_read8(void) {
+    if (scsi_stream_remaining) {
+        const int byte = fgetc(scsi_image);
+        --scsi_stream_remaining;
+        const unsigned int remaining = (unsigned int)scsi_stream_remaining;
+        scsi_registers[0x12] = (uint8_t)(remaining >> 16);
+        scsi_registers[0x13] = (uint8_t)(remaining >> 8);
+        scsi_registers[0x14] = (uint8_t)remaining;
+        if (!remaining) {
+            scsi_registers[0x18] = 0;
+            scsi_registers[0x17] = 0x16;
+            scsi_raise_interrupt();
+        }
+        return byte == EOF ? 0 : (uint8_t)byte;
+    }
+    if (scsi_dma_padding_remaining) {
+        --scsi_dma_padding_remaining;
+        return 0;
+    }
+    return 0;
+}
+
 static void dmac_service(void) {
     for (unsigned int channel = 0; channel < 4; ++channel) {
         for (unsigned int transfer = 0; transfer < 4096; ++transfer) {
@@ -2265,11 +2353,16 @@ static void dmac_service(void) {
             uint8_t operation = dmac_registers[channel][5];
             uint32_t device = dmac_get32(channel, 0x14) & 0xffffff;
             if (channel == 0 && device == FDC_BASE + 7 && !fdc_remaining) break;
+            if (channel == 1 && device == 0x340001 &&
+                !scsi_stream_remaining && !scsi_dma_padding_remaining)
+                break;
             uint32_t memory = dmac_get32(channel, 0x0c);
             if (operation & 0x80) {
                 uint8_t value = device == FDC_BASE + 7
                     ? (uint8_t)fdc_read(FDC_BASE + 6)
-                    : (uint8_t)raw_read8(device);
+                    : device == 0x340001
+                        ? scsi_dma_read8()
+                        : (uint8_t)raw_read8(device);
                 dmac_memory_write8(memory, value);
             } else {
                 if (device != FDC_BASE + 7) break;
@@ -2285,6 +2378,171 @@ static void dmac_service(void) {
             if (!count) dmac_complete(channel);
         }
     }
+}
+
+static void scsi_trace(const char *operation, unsigned int reg,
+                       unsigned int value) {
+    if (!getenv("EPS16_TRACE_SCSI")) return;
+    fprintf(stderr, "scsi cycle:%lld pc:%06x %s reg:%02x value:%02x\n",
+            current_cycle, m68k_get_reg(NULL, M68K_REG_PC) & 0xffffff,
+            operation, reg & 0x1f, value & 0xff);
+}
+
+static int scsi_mount_image(const char *path) {
+    FILE *image = path && *path ? fopen(path, "rb") : NULL;
+    if (!image) return 0;
+    if (fseeko(image, 0, SEEK_END) || ftello(image) <= 0) {
+        fclose(image);
+        return 0;
+    }
+    const off_t size = ftello(image);
+    if ((size & 511) != 0 || fseeko(image, 0, SEEK_SET)) {
+        fclose(image);
+        return 0;
+    }
+    if (scsi_image) fclose(scsi_image);
+    scsi_image = image;
+    scsi_image_size = (uint64_t)size;
+    return 1;
+}
+
+static void scsi_command(uint8_t command) {
+    scsi_trace("command", 0x18, command);
+    if (getenv("EPS16_TRACE_SCSI")) {
+        fprintf(stderr, "scsi cdb=");
+        for (unsigned int index = 3; index <= 14; ++index)
+            fprintf(stderr, "%02x", scsi_registers[index]);
+        fprintf(stderr, " target=%u count=%u\n",
+                scsi_registers[0x15] & 7,
+                ((unsigned int)scsi_registers[0x12] << 16) |
+                ((unsigned int)scsi_registers[0x13] << 8) |
+                scsi_registers[0x14]);
+    }
+    scsi_buffer_position = 0;
+    scsi_buffer_size = 0;
+    scsi_stream_remaining = 0;
+    scsi_dma_padding_remaining = 0;
+    if (command == 0) {
+        scsi_registers[0x18] = 0;
+        scsi_registers[0x17] = 0x00; /* reset complete */
+        scsi_raise_interrupt();
+        return;
+    }
+    if ((command & 0x7f) == 0x09 && (scsi_registers[0x15] & 7) == 0 &&
+        (scsi_registers[3] == 0x03 || scsi_registers[3] == 0x12)) {
+        /* REQUEST SENSE and INQUIRY are the EPS boot-time target discovery
+           commands. The virtual CD drive stays connected without a medium. */
+        scsi_buffer_size = scsi_registers[7];
+        if (scsi_buffer_size > sizeof(scsi_buffer))
+            scsi_buffer_size = sizeof(scsi_buffer);
+        memset(scsi_buffer, 0, scsi_buffer_size);
+        if (scsi_registers[3] == 0x03) {
+            if (scsi_buffer_size) scsi_buffer[0] = 0x70;
+        } else {
+            static const uint8_t inquiry[36] = {
+                /* The EPS CD-ROM discovery path requires a removable
+                   direct-access target and the literal CD-ROM product tag. */
+                0x00, 0x80, 0x01, 0x01, 31, 0, 0, 0,
+                'E','N','S','O','N','I','Q',' ',
+                0,0,'C','D','-','R','O','M',' ','E','P','S',' ',' ',' ',' ',
+                '1','.','0',' '
+            };
+            size_t count = scsi_buffer_size < sizeof(inquiry)
+                               ? scsi_buffer_size : sizeof(inquiry);
+            memcpy(scsi_buffer, inquiry, count);
+        }
+        scsi_aux_status = scsi_buffer_size ? 0x01 : 0x80; /* DBR or INT */
+        scsi_registers[0x17] = scsi_buffer_size ? 0x00 : 0x16;
+        return;
+    }
+    if ((command & 0x7f) == 0x09 && (scsi_registers[0x15] & 7) == 0 &&
+        scsi_registers[3] == 0x00) {
+        scsi_registers[0x18] = 0;
+        scsi_registers[0x17] = 0x16;
+        scsi_raise_interrupt();
+        return;
+    }
+    if ((command & 0x7f) == 0x09 && (scsi_registers[0x15] & 7) == 0 &&
+        scsi_registers[3] == 0x28 && scsi_image) {
+        const uint32_t lba =
+            ((uint32_t)scsi_registers[5] << 24) |
+            ((uint32_t)scsi_registers[6] << 16) |
+            ((uint32_t)scsi_registers[7] << 8) |
+            scsi_registers[8];
+        const uint32_t blocks =
+            ((uint32_t)scsi_registers[10] << 8) | scsi_registers[11];
+        const uint64_t offset = (uint64_t)lba * 512;
+        const uint64_t bytes = (uint64_t)blocks * 512;
+        if (bytes && offset <= scsi_image_size &&
+            bytes <= scsi_image_size - offset &&
+            !fseeko(scsi_image, (off_t)offset, SEEK_SET)) {
+            scsi_stream_remaining = bytes;
+            /* The SP-2 programs HD63450 channel 1 for data length + 1.  The
+               WD33C93 drops DREQ after the data phase with one DMA transfer
+               still pending; its completion interrupt then makes the OS
+               abort/clear the channel.  Writing a fabricated final byte would
+               overrun the destination and corrupt the EPS sample-memory free
+               list after the first instrument load. */
+            scsi_aux_status = 0x01; /* DBR */
+            scsi_registers[0x17] = 0;
+            return;
+        }
+    }
+    scsi_registers[0x18] = 0;
+    scsi_registers[0x17] = 0x42; /* selection timeout */
+    scsi_raise_interrupt();
+}
+
+static unsigned int scsi_read8(unsigned int address) {
+    if ((address & 2) == 0) {
+        scsi_trace("read-aux", 0x1f, scsi_aux_status);
+        return scsi_aux_status;
+    }
+    const unsigned int reg = scsi_address & 0x1f;
+    uint8_t value = scsi_registers[reg];
+    if (reg == 0x19 && scsi_buffer_position < scsi_buffer_size) {
+        value = scsi_buffer[scsi_buffer_position++];
+        unsigned int remaining =
+            (unsigned int)(scsi_buffer_size - scsi_buffer_position);
+        scsi_registers[0x12] = (uint8_t)(remaining >> 16);
+        scsi_registers[0x13] = (uint8_t)(remaining >> 8);
+        scsi_registers[0x14] = (uint8_t)remaining;
+        if (!remaining) {
+            scsi_registers[0x18] = 0;
+            scsi_registers[0x17] = 0x16; /* select-and-transfer complete */
+            scsi_raise_interrupt();
+        }
+    } else if (reg == 0x19 && scsi_stream_remaining) {
+        const int byte = fgetc(scsi_image);
+        value = byte == EOF ? 0 : (uint8_t)byte;
+        --scsi_stream_remaining;
+        const unsigned int remaining = (unsigned int)scsi_stream_remaining;
+        scsi_registers[0x12] = (uint8_t)(remaining >> 16);
+        scsi_registers[0x13] = (uint8_t)(remaining >> 8);
+        scsi_registers[0x14] = (uint8_t)remaining;
+        if (!remaining) {
+            scsi_registers[0x18] = 0;
+            scsi_registers[0x17] = 0x16;
+            scsi_raise_interrupt();
+        }
+    }
+    scsi_trace("read", reg, value);
+    if (reg == 0x17) scsi_clear_interrupt();
+    if (reg < 0x19) scsi_address = (uint8_t)(reg + 1);
+    return value;
+}
+
+static void scsi_write8(unsigned int address, uint8_t value) {
+    if ((address & 2) == 0) {
+        scsi_address = value & 0x1f;
+        scsi_trace("select", scsi_address, value);
+        return;
+    }
+    const unsigned int reg = scsi_address & 0x1f;
+    scsi_registers[reg] = value;
+    scsi_trace("write", reg, value);
+    if (reg == 0x18) scsi_command(value);
+    if (reg < 0x19) scsi_address = (uint8_t)(reg + 1);
 }
 
 static unsigned int raw_read8(unsigned int address) {
@@ -2303,6 +2561,8 @@ static unsigned int raw_read8(unsigned int address) {
         return duart_read(address);
     if (address >= FDC_BASE && address < FDC_BASE + FDC_SIZE)
         return fdc_read(address);
+    if (address >= SCSI_BASE && address < SCSI_BASE + SCSI_SIZE)
+        return scsi_read8(address);
     if (address >= SAMPLE_RAM_BASE && address < SAMPLE_RAM_BASE + SAMPLE_RAM_SIZE)
         return sample_ram[address - SAMPLE_RAM_BASE];
     if (address >= OS_RAM_BASE) return os_ram[address - OS_RAM_BASE];
@@ -2581,6 +2841,10 @@ void m68k_write_memory_8(unsigned int address, unsigned int value) {
         fdc_write(address, value);
         return;
     }
+    if (address >= SCSI_BASE && address < SCSI_BASE + SCSI_SIZE) {
+        scsi_write8(address, (uint8_t)value);
+        return;
+    }
     if (address < LOW_RAM_SIZE && function_code != 6) {
         low_ram[address] = (uint8_t)value;
         return;
@@ -2747,13 +3011,21 @@ static int load_split_rom(const char *upper_path, const char *lower_path) {
 static int load_disk(const char *path) {
     char error[256];
     Eps16DiskFormat format;
-    if (!eps16_disk_load(path, disk_image, sizeof(disk_image), &format,
-                         error, sizeof(error))) {
+    if (!eps16_disk_load_physical(path, disk_image, sizeof(disk_image),
+                                  disk_sector_status,
+                                  sizeof(disk_sector_status), &format,
+                                  error, sizeof(error))) {
         fprintf(stderr, "%s: %s\n", path, error);
         return 0;
     }
-    printf("disk_input=%s format=%s logical_bytes=%u\n", path,
-           format == EPS16_DISK_HFE ? "HFE" : "IMG", DISK_SIZE);
+    unsigned int unreadable = 0;
+    for (size_t block = 0; block < EPS16_LOGICAL_SECTOR_COUNT; ++block)
+        unreadable += disk_sector_status[block] != EPS16_SECTOR_READABLE;
+    const char *format_name = format == EPS16_DISK_HFE ? "HFE" :
+                              format == EPS16_DISK_EFE ? "EFE" : "IMG";
+    printf("disk_input=%s format=%s logical_bytes=%u unreadable_sectors=%u\n",
+           path, format_name, DISK_SIZE,
+           unreadable);
     disk_loaded = 1;
     return 1;
 }
@@ -2813,6 +3085,13 @@ static int parse_panel_event(const char *text, uint8_t *event, size_t *length) {
 
 int main(int argc, char **argv) {
     rom_probe_state_defaults(rom_probe_state);
+    const char *scsi_image_path = getenv("EPS16_SCSI_CD");
+    if (scsi_image_path && *scsi_image_path &&
+        !scsi_mount_image(scsi_image_path)) {
+        fprintf(stderr, "SCSI CD image could not be opened: %s\n",
+                scsi_image_path);
+        return 1;
+    }
     if (argc < 2 || argc > 6) {
         fprintf(stderr,
                 "usage: %s COMBINED_ROM [CYCLES=200000] [LOGICAL_DISK_IMG] "
@@ -3423,5 +3702,6 @@ int main(int argc, char **argv) {
                audio_wav_path, audio_wav_frames, audio_wav_rate);
     }
     if (sample_live_trace) fclose(sample_live_trace);
+    if (scsi_image) fclose(scsi_image);
     return 0;
 }

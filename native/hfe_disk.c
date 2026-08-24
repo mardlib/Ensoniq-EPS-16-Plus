@@ -56,6 +56,19 @@ static void put_le16(uint8_t *target, uint16_t value) {
     target[1] = (uint8_t)(value >> 8);
 }
 
+static void put_be24(uint8_t *target, unsigned int value) {
+    target[0] = (uint8_t)(value >> 16);
+    target[1] = (uint8_t)(value >> 8);
+    target[2] = (uint8_t)value;
+}
+
+static void put_be32(uint8_t *target, unsigned int value) {
+    target[0] = (uint8_t)(value >> 24);
+    target[1] = (uint8_t)(value >> 16);
+    target[2] = (uint8_t)(value >> 8);
+    target[3] = (uint8_t)value;
+}
+
 int eps16_disk_create_blank(uint8_t *logical, size_t logical_size) {
     if (!logical || logical_size != EPS16_LOGICAL_DISK_SIZE) return 0;
     memset(logical, 0, logical_size);
@@ -94,6 +107,92 @@ int eps16_disk_create_blank(uint8_t *logical, size_t logical_size) {
         fat[entry * 3 + 2] = 1;
     for (unsigned int block = 5; block < 15; ++block)
         memcpy(logical + (block + 1) * EPS_SECTOR_SIZE - 2, "FB", 2);
+    return 1;
+}
+
+static uint8_t *fat_entry(uint8_t *logical, unsigned int block) {
+    const unsigned int fat_block = block / 170U;
+    const unsigned int index = block % 170U;
+    return logical + (5U + fat_block) * EPS_SECTOR_SIZE + index * 3U;
+}
+
+static int create_from_efe(const uint8_t *efe, size_t efe_size,
+                           uint8_t *logical, size_t logical_size,
+                           char *error, size_t error_size) {
+    static const uint8_t signature[] = {
+        '\r', '\n', 'E', 'p', 's', ' ', 'F', 'i', 'l', 'e', ':'
+    };
+    enum {
+        EFE_HEADER_SIZE = 512,
+        EFE_NAME_OFFSET = 0x12,
+        EFE_NAME_SIZE = 12,
+        EFE_TYPE_OFFSET = 0x32,
+        EFE_BLOCKS_OFFSET = 0x34,
+        EFE_COPY_BLOCKS_OFFSET = 0x36,
+        EPS_RESERVED_BLOCKS = 15,
+        EPS_DIRECTORY_ENTRY_SIZE = 25,
+        EPS_DIRECTORY_FIRST_FILE = 1,
+        EPS_TOTAL_BLOCKS = EPS16_LOGICAL_DISK_SIZE / EPS_SECTOR_SIZE
+    };
+    if (!efe || efe_size < EFE_HEADER_SIZE ||
+        efe_size % EPS_SECTOR_SIZE ||
+        memcmp(efe, signature, sizeof(signature)) || efe[0x31] != 0x1a) {
+        fail(error, error_size, "invalid or truncated Ensoniq EFE header");
+        return 0;
+    }
+    const size_t data_blocks = efe_size / EPS_SECTOR_SIZE - 1U;
+    const unsigned int declared_blocks = be16(efe + EFE_BLOCKS_OFFSET);
+    const unsigned int copied_blocks = be16(efe + EFE_COPY_BLOCKS_OFFSET);
+    if (!data_blocks || data_blocks != declared_blocks ||
+        data_blocks != copied_blocks) {
+        fail(error, error_size,
+             "EFE size/header mismatch: file has %zu data blocks, header says %u/%u",
+             data_blocks, declared_blocks, copied_blocks);
+        return 0;
+    }
+    if (data_blocks > EPS_TOTAL_BLOCKS - EPS_RESERVED_BLOCKS) {
+        fail(error, error_size,
+             "EFE needs %zu blocks; an EPS DD disk has %u free blocks",
+             data_blocks, EPS_TOTAL_BLOCKS - EPS_RESERVED_BLOCKS);
+        return 0;
+    }
+    if (!efe[EFE_TYPE_OFFSET]) {
+        fail(error, error_size, "EFE has no Ensoniq file type");
+        return 0;
+    }
+    int has_name = 0;
+    for (size_t index = 0; index < EFE_NAME_SIZE; ++index)
+        has_name |= efe[EFE_NAME_OFFSET + index] != ' ' &&
+                    efe[EFE_NAME_OFFSET + index] != 0;
+    if (!has_name) {
+        fail(error, error_size, "EFE has an empty Ensoniq file name");
+        return 0;
+    }
+    if (!eps16_disk_create_blank(logical, logical_size)) {
+        fail(error, error_size, "cannot create temporary EPS disk for EFE");
+        return 0;
+    }
+
+    memcpy(logical + EPS_SECTOR_SIZE + 31, "EFELOAD", 7);
+    put_be32(logical + 2U * EPS_SECTOR_SIZE,
+             (unsigned int)(EPS_TOTAL_BLOCKS - EPS_RESERVED_BLOCKS -
+                            data_blocks));
+
+    uint8_t *entry = logical + 3U * EPS_SECTOR_SIZE +
+                     EPS_DIRECTORY_FIRST_FILE * EPS_DIRECTORY_ENTRY_SIZE;
+    entry[2] = efe[EFE_TYPE_OFFSET];
+    memcpy(entry + 3, efe + EFE_NAME_OFFSET, EFE_NAME_SIZE);
+    memcpy(entry + 15, efe + EFE_BLOCKS_OFFSET, 2);
+    memcpy(entry + 17, efe + EFE_COPY_BLOCKS_OFFSET, 2);
+    put_be32(entry + 19, EPS_RESERVED_BLOCKS);
+
+    memcpy(logical + EPS_RESERVED_BLOCKS * EPS_SECTOR_SIZE,
+           efe + EFE_HEADER_SIZE, data_blocks * EPS_SECTOR_SIZE);
+    for (size_t index = 0; index < data_blocks; ++index) {
+        const unsigned int block = EPS_RESERVED_BLOCKS + (unsigned int)index;
+        put_be24(fat_entry(logical, block),
+                 index + 1U < data_blocks ? block + 1U : 1U);
+    }
     return 1;
 }
 
@@ -288,7 +387,9 @@ static int decode_bytes(const uint8_t *stream, size_t stream_size, size_t offset
 }
 
 static int decode_hfe(const uint8_t *image, size_t image_size, uint8_t *logical,
-                      size_t logical_size, char *error, size_t error_size) {
+                      size_t logical_size, uint8_t *sector_status,
+                      int tolerate_physical_errors, char *error,
+                      size_t error_size) {
     if (logical_size != EPS16_LOGICAL_DISK_SIZE) {
         fail(error, error_size, "logical buffer must be %u bytes", EPS16_LOGICAL_DISK_SIZE);
         return 0;
@@ -313,6 +414,9 @@ static int decode_hfe(const uint8_t *image, size_t image_size, uint8_t *logical,
     }
 
     memset(logical, 0, logical_size);
+    if (sector_status)
+        memset(sector_status, EPS16_SECTOR_NOT_FOUND,
+               EPS16_LOGICAL_SECTOR_COUNT);
     unsigned int total = 0;
     for (unsigned int track_index = 0; track_index < tracks; ++track_index) {
         const uint8_t *entry = image + table + track_index * 4;
@@ -356,8 +460,27 @@ static int decode_hfe(const uint8_t *image, size_t image_size, uint8_t *logical,
                     }
                     uint16_t actual = crc16((const uint8_t *)"\xa1\xa1\xa1", 3, 0xffff);
                     actual = crc16(id, 5, actual);
-                    if (actual != be16(id + 5) || id[1] != track_index || id[2] != side ||
+                    if (id[1] != track_index || id[2] != side ||
                         id[3] >= EPS_SECTORS || id[4] != 2) {
+                        if (tolerate_physical_errors) {
+                            pending_sector = -1;
+                            continue;
+                        }
+                        free(stream);
+                        fail(error, error_size,
+                             "invalid ID/CRC at track %u side %u: C=%u H=%u R=%u N=%u",
+                             track_index, side, id[1], id[2], id[3], id[4]);
+                        return 0;
+                    }
+                    if (actual != be16(id + 5)) {
+                        if (tolerate_physical_errors) {
+                            const size_t block =
+                                ((track_index * EPS_SIDES + side) * EPS_SECTORS) + id[3];
+                            if (sector_status[block] != EPS16_SECTOR_READABLE)
+                                sector_status[block] = EPS16_SECTOR_CRC_ERROR;
+                            pending_sector = -1;
+                            continue;
+                        }
                         free(stream);
                         fail(error, error_size,
                              "invalid ID/CRC at track %u side %u: C=%u H=%u R=%u N=%u",
@@ -375,22 +498,35 @@ static int decode_hfe(const uint8_t *image, size_t image_size, uint8_t *logical,
                     }
                     uint16_t actual = crc16((const uint8_t *)"\xa1\xa1\xa1", 3, 0xffff);
                     actual = crc16(data, EPS_SECTOR_SIZE + 1, actual);
-                    if (actual != be16(data + EPS_SECTOR_SIZE + 1) ||
-                        (seen & (1u << pending_sector))) {
+                    if (actual != be16(data + EPS_SECTOR_SIZE + 1)) {
+                        if (tolerate_physical_errors) {
+                            const size_t block =
+                                ((track_index * EPS_SIDES + side) * EPS_SECTORS) +
+                                (unsigned int)pending_sector;
+                            if (sector_status[block] != EPS16_SECTOR_READABLE)
+                                sector_status[block] = EPS16_SECTOR_CRC_ERROR;
+                            pending_sector = -1;
+                            continue;
+                        }
                         free(stream);
-                        fail(error, error_size, "bad data CRC or duplicate at track %u side %u sector %d",
+                        fail(error, error_size, "bad data CRC at track %u side %u sector %d",
                              track_index, side, pending_sector);
                         return 0;
                     }
                     size_t block = ((track_index * EPS_SIDES + side) * EPS_SECTORS) +
                                    (unsigned int)pending_sector;
-                    memcpy(logical + block * EPS_SECTOR_SIZE, data + 1, EPS_SECTOR_SIZE);
-                    seen |= 1u << pending_sector;
-                    ++total;
+                    if (!(seen & (1u << pending_sector))) {
+                        memcpy(logical + block * EPS_SECTOR_SIZE, data + 1,
+                               EPS_SECTOR_SIZE);
+                        seen |= 1u << pending_sector;
+                        if (sector_status)
+                            sector_status[block] = EPS16_SECTOR_READABLE;
+                        ++total;
+                    }
                     pending_sector = -1;
                 }
             }
-            if (seen != 0x03ff) {
+            if (!tolerate_physical_errors && seen != 0x03ff) {
                 free(stream);
                 fail(error, error_size, "track %u side %u has %u of 10 sectors",
                      track_index, side, total);
@@ -399,15 +535,17 @@ static int decode_hfe(const uint8_t *image, size_t image_size, uint8_t *logical,
         }
         free(stream);
     }
-    if (total != EPS_TRACKS * EPS_SIDES * EPS_SECTORS) {
+    if ((!tolerate_physical_errors &&
+         total != EPS_TRACKS * EPS_SIDES * EPS_SECTORS) || !total) {
         fail(error, error_size, "decoded %u sectors, expected 1600", total);
         return 0;
     }
     return 1;
 }
 
-int eps16_disk_load(const char *path, uint8_t *logical, size_t logical_size,
-                    Eps16DiskFormat *format, char *error, size_t error_size) {
+static int disk_load(const char *path, uint8_t *logical, size_t logical_size,
+                     uint8_t *sector_status, int tolerate_physical_errors,
+                     Eps16DiskFormat *format, char *error, size_t error_size) {
     FILE *input = fopen(path, "rb");
     if (!input) {
         fail(error, error_size, "cannot open disk image: %s", path);
@@ -436,24 +574,60 @@ int eps16_disk_load(const char *path, uint8_t *logical, size_t logical_size,
             fail(error, error_size, "out of memory allocating validated HFE disk");
             ok = 0;
         } else {
-            ok = decode_hfe(image, (size_t)length, decoded, logical_size, error, error_size);
+            ok = decode_hfe(image, (size_t)length, decoded, logical_size,
+                            sector_status, tolerate_physical_errors,
+                            error, error_size);
             if (ok) {
                 memcpy(logical, decoded, logical_size);
                 if (format) *format = EPS16_DISK_HFE;
             }
             free(decoded);
         }
+    } else if (length >= 11 && !memcmp(image, "\r\nEps File:", 11)) {
+        ok = create_from_efe(image, (size_t)length, logical, logical_size,
+                             error, error_size);
+        if (ok) {
+            if (sector_status)
+                memset(sector_status, EPS16_SECTOR_READABLE,
+                       EPS16_LOGICAL_SECTOR_COUNT);
+            if (format) *format = EPS16_DISK_EFE;
+        }
     } else if ((size_t)length == logical_size) {
         memcpy(logical, image, logical_size);
+        if (sector_status)
+            memset(sector_status, EPS16_SECTOR_READABLE,
+                   EPS16_LOGICAL_SECTOR_COUNT);
         ok = 1;
         if (format) *format = EPS16_DISK_IMG;
     } else {
-        fail(error, error_size, "expected an HFE v1 file or exactly %zu IMG bytes, got %ld",
+        fail(error, error_size,
+             "expected an EFE, HFE v1, or exactly %zu IMG bytes; got %ld",
              logical_size, length);
         ok = 0;
     }
     free(image);
     return ok;
+}
+
+int eps16_disk_load(const char *path, uint8_t *logical, size_t logical_size,
+                    Eps16DiskFormat *format, char *error, size_t error_size) {
+    return disk_load(path, logical, logical_size, NULL, 0, format, error,
+                     error_size);
+}
+
+int eps16_disk_load_physical(const char *path, uint8_t *logical,
+                             size_t logical_size, uint8_t *sector_status,
+                             size_t sector_status_size,
+                             Eps16DiskFormat *format, char *error,
+                             size_t error_size) {
+    if (!sector_status ||
+        sector_status_size != EPS16_LOGICAL_SECTOR_COUNT) {
+        fail(error, error_size, "sector status buffer must be %u bytes",
+             EPS16_LOGICAL_SECTOR_COUNT);
+        return 0;
+    }
+    return disk_load(path, logical, logical_size, sector_status, 1, format,
+                     error, error_size);
 }
 
 int eps16_disk_save(const char *path, const uint8_t *logical,
@@ -466,6 +640,10 @@ int eps16_disk_save(const char *path, const uint8_t *logical,
     }
     if (format == EPS16_DISK_IMG)
         return save_atomic(path, logical, logical_size, error, error_size);
+    if (format != EPS16_DISK_HFE) {
+        fail(error, error_size, "disk output format must be IMG or HFE");
+        return 0;
+    }
     size_t encoded_size = 0;
     uint8_t *encoded = encode_hfe(logical, logical_size, &encoded_size,
                                   error, error_size);

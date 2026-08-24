@@ -1,12 +1,12 @@
-Ensoniq EPS-16 Plus 1.0.8 external files
+Ensoniq EPS-16 Plus 1.0.9 external files
 =========================================
 
-The universal VST3 supports Intel macOS 10.13 or newer and Apple Silicon
-macOS 11 or newer in the same plug-in bundle.
+The universal VST3 and Audio Unit v2 support Intel macOS 10.13 or newer and
+Apple Silicon macOS 11 or newer.
 
 Place the user-supplied files in this EPS_files folder, next to the installed
-VST3 plug-in. The plug-in never contains or redistributes these copyrighted
-files.
+VST3 or Audio Unit plug-in. The plug-in never contains or redistributes these
+copyrighted files.
 
 The plug-in also searches both standard locations automatically, so existing
 files do not need to be moved when the VST3 changes between a user and a
@@ -14,6 +14,8 @@ system-wide installation:
 
   ~/Library/Audio/Plug-Ins/VST3/EPS_files/
   /Library/Audio/Plug-Ins/VST3/EPS_files/
+  ~/Library/Audio/Plug-Ins/Components/EPS_files/
+  /Library/Audio/Plug-Ins/Components/EPS_files/
 
 Preferred names:
 
@@ -65,10 +67,19 @@ The four small floppy icons at the upper right are instance-local:
 
   OS     reinsert the configured EPS130OS.img or EPS130OS.hfe
   NEW    insert a fresh formatted empty 800 KiB EPS data disk
-  LOAD   choose and insert any EPS .img or HFE v1 disk image
+  LOAD   import .efe, insert .img/HFE v1, or insert an experimental SCSI .iso
   SAVE   save the currently inserted disk as .img or HFE v1
 
 OS, NEW and LOAD send the original hardware disk-change input to the running
 EPS. NEW asks for confirmation because it ejects unsaved in-memory disk data.
 SAVE includes sector changes made by the original operating system. Choose
 .hfe when the exported disk will be used with HFE-compatible real hardware.
+Experimental read-only SCSI ISO mounting is intended for loading instruments
+from EPS CD-ROM libraries and their ISO backups. Insert the ISO with LOAD.
+
+Experimental keyboard shortcuts
+-------------------------------
+
+With the plug-in editor focused, Control+1 through Control+0 open the matching
+CMD page. Option+1 through Option+0 open the matching EDIT page. Shortcut and
+mouse presses show a brief acknowledgement glow.

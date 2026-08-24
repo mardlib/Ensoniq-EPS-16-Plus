@@ -14,6 +14,23 @@ static unsigned int le16(const uint8_t *value) {
     return value[0] | ((unsigned int)value[1] << 8);
 }
 
+static unsigned int be24(const uint8_t *value) {
+    return ((unsigned int)value[0] << 16) |
+           ((unsigned int)value[1] << 8) | value[2];
+}
+
+static unsigned int be32(const uint8_t *value) {
+    return ((unsigned int)value[0] << 24) |
+           ((unsigned int)value[1] << 16) |
+           ((unsigned int)value[2] << 8) | value[3];
+}
+
+static unsigned int fat_value(const uint8_t *disk, unsigned int block) {
+    const uint8_t *entry = disk + (5U + block / 170U) * 512U +
+                           (block % 170U) * 3U;
+    return be24(entry);
+}
+
 static uint8_t reverse_bits(uint8_t value) {
     value = (uint8_t)(((value & 0x55) << 1) | ((value >> 1) & 0x55));
     value = (uint8_t)(((value & 0x33) << 2) | ((value >> 2) & 0x33));
@@ -68,7 +85,7 @@ static int verify_hardware_track(FILE *input, unsigned int track) {
     return 1;
 }
 
-int main(void) {
+int main(int argc, char **argv) {
     uint8_t source[EPS16_LOGICAL_DISK_SIZE];
     uint8_t decoded[EPS16_LOGICAL_DISK_SIZE];
     if (!eps16_disk_create_blank(decoded, sizeof(decoded)) ||
@@ -109,15 +126,128 @@ int main(void) {
     Eps16DiskFormat format;
     const int loaded = eps16_disk_load(path, decoded, sizeof(decoded), &format,
                                        error, sizeof(error));
-    remove(path);
     if (!loaded || format != EPS16_DISK_HFE) {
+        remove(path);
         fprintf(stderr, "generated HFE load failed: %s\n", error);
         return 1;
     }
     if (memcmp(source, decoded, sizeof(source))) {
         fputs("IMG -> HFE -> IMG roundtrip mismatch\n", stderr);
+        remove(path);
         return 1;
     }
+
+    /* Real HxC/Gotek captures can contain unused bad or unformatted sectors.
+       A physical drive does not reject the whole disk up front: the WD1772
+       reports the fault only if the OS requests that sector. Corrupt one data
+       bit in the first ID CRC and verify both APIs: archival extraction stays
+       strict, while the emulator import retains a per-sector CRC error. */
+    FILE *damaged = fopen(path, "r+b");
+    const long first_id_crc_low = HFE_HEADER_SIZE + 203;
+    uint8_t encoded_crc_byte = 0;
+    if (!damaged || fseek(damaged, first_id_crc_low, SEEK_SET) ||
+        fread(&encoded_crc_byte, 1, 1, damaged) != 1 ||
+        fseek(damaged, first_id_crc_low, SEEK_SET)) {
+        if (damaged) fclose(damaged);
+        remove(path);
+        fputs("cannot prepare damaged HFE test image\n", stderr);
+        return 1;
+    }
+    encoded_crc_byte ^= 0x80; /* bit-reversed HFE storage: decoded bit zero */
+    const int damaged_write_ok =
+        fwrite(&encoded_crc_byte, 1, 1, damaged) == 1;
+    const int damaged_close_ok = fclose(damaged) == 0;
+    if (!damaged_write_ok || !damaged_close_ok) {
+        remove(path);
+        fputs("cannot write damaged HFE test image\n", stderr);
+        return 1;
+    }
+    if (eps16_disk_load(path, decoded, sizeof(decoded), &format,
+                        error, sizeof(error))) {
+        remove(path);
+        fputs("strict HFE extraction accepted a bad ID CRC\n", stderr);
+        return 1;
+    }
+    uint8_t sector_status[EPS16_LOGICAL_SECTOR_COUNT];
+    if (!eps16_disk_load_physical(path, decoded, sizeof(decoded),
+                                  sector_status, sizeof(sector_status),
+                                  &format, error, sizeof(error)) ||
+        sector_status[0] != EPS16_SECTOR_CRC_ERROR) {
+        remove(path);
+        fprintf(stderr, "physical HFE import failed: %s\n", error);
+        return 1;
+    }
+    for (size_t block = 1; block < EPS16_LOGICAL_SECTOR_COUNT; ++block) {
+        if (sector_status[block] != EPS16_SECTOR_READABLE) {
+            remove(path);
+            fputs("physical HFE import marked an intact sector bad\n", stderr);
+            return 1;
+        }
+    }
+    remove(path);
+
+    /* EFE is a 512-byte exchange header followed by the native file blocks.
+       Import must create an ordinary EPS directory/FAT image so the original
+       OS remains solely responsible for loading the instrument. */
+    uint8_t efe[3 * 512] = {0};
+    memcpy(efe, "\r\nEps File:", 11);
+    memcpy(efe + 0x12, "TEST EFE    ", 12);
+    memcpy(efe + 0x22, "Instrument   ", 13);
+    efe[0x2f] = '\r';
+    efe[0x30] = '\n';
+    efe[0x31] = 0x1a;
+    efe[0x32] = 0x03;
+    efe[0x33] = 0x03;
+    efe[0x35] = 2;
+    efe[0x37] = 2;
+    for (size_t index = 512; index < sizeof(efe); ++index)
+        efe[index] = (uint8_t)(index * 29U + 7U);
+    snprintf(path, sizeof(path), "/tmp/eps16-efe-import-%ld.efe",
+             (long)getpid());
+    FILE *efe_file = fopen(path, "wb");
+    const int efe_write_ok = efe_file &&
+        fwrite(efe, 1, sizeof(efe), efe_file) == sizeof(efe);
+    const int efe_close_ok = efe_file && fclose(efe_file) == 0;
+    if (!efe_write_ok || !efe_close_ok) {
+        remove(path);
+        fputs("cannot create synthetic EFE fixture\n", stderr);
+        return 1;
+    }
+    if (!eps16_disk_load(path, decoded, sizeof(decoded), &format,
+                         error, sizeof(error))) {
+        remove(path);
+        fprintf(stderr, "synthetic EFE import failed: %s\n", error);
+        return 1;
+    }
+    remove(path);
+    const uint8_t *directory_entry = decoded + 3 * 512 + 25;
+    if (format != EPS16_DISK_EFE ||
+        memcmp(decoded + 512 + 31, "EFELOAD", 7) ||
+        be32(decoded + 2 * 512) != 1583 ||
+        directory_entry[2] != 3 ||
+        memcmp(directory_entry + 3, "TEST EFE    ", 12) ||
+        be32(directory_entry + 19) != 15 ||
+        memcmp(decoded + 15 * 512, efe + 512, 2 * 512) ||
+        fat_value(decoded, 15) != 16 || fat_value(decoded, 16) != 1) {
+        fputs("synthetic EFE directory/FAT import mismatch\n", stderr);
+        return 1;
+    }
+
+    if (argc == 2) {
+        if (!eps16_disk_load(argv[1], decoded, sizeof(decoded), &format,
+                             error, sizeof(error)) ||
+            format != EPS16_DISK_EFE) {
+            fprintf(stderr, "supplied EFE import failed: %s\n", error);
+            return 1;
+        }
+        printf("supplied EFE imported: %.12s, %u blocks, %u free\n",
+               decoded + 3 * 512 + 28,
+               be32(decoded + 3 * 512 + 25 + 19) == 15
+                   ? (unsigned int)(1585 - be32(decoded + 2 * 512)) : 0,
+               be32(decoded + 2 * 512));
+    }
     puts("IMG -> HFE -> IMG roundtrip: 1600 sectors, 819200 bytes");
+    puts("damaged HFE import: bad sector deferred to WD1772 access");
+    puts("EFE import: native directory, FAT chain and payload verified");
     return 0;
 }

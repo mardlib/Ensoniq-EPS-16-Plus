@@ -413,6 +413,51 @@ void Eps16PanelEditor::PanelButton::setShiftChordCode(std::uint8_t rawCode) {
     shiftChordCode = rawCode;
 }
 
+void Eps16PanelEditor::PanelButton::startActivationGlow() {
+    activationGlowStartedMs = juce::Time::getMillisecondCounterHiRes();
+    repaint();
+}
+
+void Eps16PanelEditor::PanelButton::updateActivationGlow(double nowMs) {
+    static constexpr double durationMs = 260.0;
+    if (activationGlowStartedMs < 0.0) return;
+    if (nowMs - activationGlowStartedMs >= durationMs)
+        activationGlowStartedMs = -1.0;
+    repaint();
+}
+
+void Eps16PanelEditor::PanelButton::paintButton(juce::Graphics &graphics,
+                                                bool highlighted,
+                                                bool down) {
+    TextButton::paintButton(graphics, highlighted, down);
+    if (activationGlowStartedMs < 0.0) return;
+
+    static constexpr double durationMs = 260.0;
+    const auto elapsed = juce::Time::getMillisecondCounterHiRes() -
+                         activationGlowStartedMs;
+    const auto amount = static_cast<float>(juce::jlimit(
+        0.0, 1.0, 1.0 - elapsed / durationMs));
+    const auto bounds = getLocalBounds().toFloat();
+    graphics.setColour(displayColour.withAlpha(0.12f * amount));
+    graphics.drawRoundedRectangle(bounds.reduced(1.0f), 7.0f, 5.0f);
+    graphics.setColour(displayColour.withAlpha(0.28f * amount));
+    graphics.drawRoundedRectangle(bounds.reduced(2.0f), 6.0f, 2.8f);
+    graphics.setColour(displayColour.withAlpha(0.72f * amount));
+    graphics.drawRoundedRectangle(bounds.reduced(3.0f), 5.0f, 1.2f);
+}
+
+void Eps16PanelEditor::PanelButton::triggerShortcut() {
+    if (!isEnabled()) return;
+    if (processor.enqueuePanelTransition(code, true)) {
+        startActivationGlow();
+        processor.enqueuePanelTransition(code, false);
+    }
+}
+
+void Eps16PanelEditor::PanelButton::showActivationGlow() {
+    startActivationGlow();
+}
+
 void Eps16PanelEditor::PanelButton::mouseDown(const juce::MouseEvent &event) {
     if (auto *parent = getParentComponent()) parent->grabKeyboardFocus();
     if (isEnabled() && !pressed) {
@@ -420,6 +465,7 @@ void Eps16PanelEditor::PanelButton::mouseDown(const juce::MouseEvent &event) {
             shiftChordPressed =
                 processor.enqueuePanelTransition(shiftChordCode, true);
         pressed = processor.enqueuePanelTransition(code, true);
+        if (pressed) startActivationGlow();
         if (!pressed && shiftChordPressed) {
             processor.enqueuePanelTransition(shiftChordCode, false);
             shiftChordPressed = false;
@@ -799,7 +845,7 @@ Eps16PanelEditor::Eps16PanelEditor(Eps16PlusProcessor &processorToUse)
             ? initialFile.getParentDirectory()
             : Eps16PlusProcessor::defaultResourceDirectory();
         diskChooser = std::make_unique<juce::FileChooser>(
-            "Insert EPS disk image (.IMG or .HFE)", initialDirectory, "*");
+            "Load an EPS file (.EFE, .IMG, .HFE or .ISO)", initialDirectory, "*");
         auto safeEditor = juce::Component::SafePointer<Eps16PanelEditor>(this);
         diskChooser->launchAsync(
             juce::FileBrowserComponent::openMode |
@@ -809,13 +855,14 @@ Eps16PanelEditor::Eps16PanelEditor(Eps16PlusProcessor &processorToUse)
                     const auto file = chooser.getResult();
                     if (!file.existsAsFile()) return;
                     const auto extension = file.getFileExtension().toLowerCase();
-                    if (extension == ".img" || extension == ".hfe") {
+                    if (extension == ".efe" || extension == ".img" ||
+                        extension == ".hfe" || extension == ".iso") {
                         editor->owner.insertDisk(file);
                     } else {
                         juce::NativeMessageBox::showMessageBoxAsync(
                             juce::MessageBoxIconType::WarningIcon,
-                            "Unsupported disk image",
-                            "Please choose an EPS .IMG or .HFE disk image.",
+                            "Unsupported EPS file",
+                            "Please choose an EPS .EFE, .IMG, .HFE or .ISO file.",
                             editor);
                     }
                 }
@@ -875,6 +922,13 @@ Eps16PanelEditor::Eps16PanelEditor(Eps16PlusProcessor &processorToUse)
     for (std::size_t index = 0; index < pages.size(); ++index)
         pageButtons[index] = &addPanelButton(pages[index].first,
                                              pages[index].second);
+    for (std::size_t index = 0; index < 10; ++index) {
+        const auto pageIndex = index == 9 ? 10U : index;
+        const auto digit = juce::String(index == 9 ? 0 : (int)index + 1);
+        pageButtons[pageIndex]->setTooltip(
+            pageButtons[pageIndex]->getName() + " (Control+" + digit +
+            " opens CMD; Option+" + digit + " opens EDIT)");
+    }
 
     const std::array<std::pair<const char *, std::uint8_t>, 7> modes{{
         {"LOAD", 0x1a}, {"CMD", 0x06}, {"EDIT", 0x05},
@@ -996,12 +1050,17 @@ bool Eps16PanelEditor::updateArrowKey(int keyCode, bool isDown) {
     static constexpr std::array<std::uint8_t, 4> panelCodes{
         0x0a, 0x0b, 0x10, 0x11
     };
+    const std::array<PanelButton *, 4> arrowButtons{
+        upButton, downButton, leftButton, rightButton
+    };
     for (std::size_t index = 0; index < keyCodes.size(); ++index) {
         if (keyCode != keyCodes[index]) continue;
         if (arrowKeysDown[index] == isDown) return true;
         if (isDown) {
             arrowKeysDown[index] =
                 owner.enqueuePanelTransition(panelCodes[index], true);
+            if (arrowKeysDown[index])
+                arrowButtons[index]->showActivationGlow();
         } else {
             owner.enqueuePanelTransition(panelCodes[index], false);
             arrowKeysDown[index] = false;
@@ -1012,6 +1071,24 @@ bool Eps16PanelEditor::updateArrowKey(int keyCode, bool isDown) {
 }
 
 bool Eps16PanelEditor::keyPressed(const juce::KeyPress &key) {
+    const auto modifiers = key.getModifiers();
+    const bool noAdditionalModifiers = !modifiers.isShiftDown();
+    const bool controlShortcut = modifiers.isCtrlDown() &&
+        !modifiers.isCommandDown() && !modifiers.isAltDown() &&
+        noAdditionalModifiers;
+    const bool editShortcut = modifiers.isAltDown() &&
+        !modifiers.isCommandDown() && !modifiers.isCtrlDown() &&
+        noAdditionalModifiers;
+    const auto keyCode = key.getKeyCode();
+    if ((controlShortcut || editShortcut) &&
+        keyCode >= '0' && keyCode <= '9') {
+        const auto pageIndex = keyCode == '0'
+            ? std::size_t{10} : static_cast<std::size_t>(keyCode - '1');
+        if (controlShortcut) modeButtons[1]->triggerShortcut();
+        if (editShortcut) modeButtons[2]->triggerShortcut();
+        pageButtons[pageIndex]->triggerShortcut();
+        return true;
+    }
     return updateArrowKey(key.getKeyCode(), true);
 }
 
@@ -1101,6 +1178,8 @@ void Eps16PanelEditor::timerCallback() {
        Level-Detect meter. Resource discovery hashes split ROMs, so retain
        the previous low-rate cadence for file/status work. */
     const bool slowUpdate = (timerTicks++ % 8U) == 0;
+    const auto nowMs = juce::Time::getMillisecondCounterHiRes();
+    for (auto &button : buttons) button->updateActivationGlow(nowMs);
     if (slowUpdate) {
         owner.refreshResourcePaths();
         const juce::File osDisk(owner.getResourcePath(
@@ -1112,7 +1191,8 @@ void Eps16PanelEditor::timerCallback() {
         newDiskButton.setEnabled(owner.machineReady());
         newDiskButton.setTooltip("Insert a new blank formatted EPS disk");
         loadDiskButton.setEnabled(owner.machineReady());
-        loadDiskButton.setTooltip("Insert an EPS .IMG or .HFE disk image");
+        loadDiskButton.setTooltip(
+            "Load an EPS .EFE file or insert an .IMG/.HFE/.ISO image");
         saveDiskButton.setEnabled(owner.machineReady());
         saveDiskButton.setTooltip("Save the inserted disk as .IMG or .HFE");
         updateDiskName();

@@ -64,6 +64,20 @@ int main(int argc, char **argv) {
         !(eps16_probe_machine_indicator_on(2) & 0x0800U) ||
         eps16_probe_machine_illegal_instructions())
         return 1;
+
+    /* PLAY and STOP/CONT can follow short BAR/status field writes with a
+       complete 60 01 VFD text frame. Repeated transport changes must not
+       inherit the preceding field's write position and rotate the 22 cells. */
+    for (unsigned int replay = 0; replay < 3; ++replay) {
+        click(0x1d);
+        if (!display_starts_with("SEQUENCE 01") ||
+            eps16_probe_machine_illegal_instructions())
+            return 1;
+        click(0x17);
+        if (!display_starts_with("SEQUENCE 01") ||
+            eps16_probe_machine_illegal_instructions())
+            return 1;
+    }
     eps16_probe_machine_destroy(machine);
     return 0;
 }

@@ -63,7 +63,11 @@ the verified machine is mechanically extracted from `rom_probe.c`.
 - While the plug-in editor has keyboard focus, the macOS cursor keys send the
   same raw press/release transitions as the four physical EPS arrow buttons.
   Losing focus releases every held arrow; other computer keys remain with the
-  DAW.
+  DAW. Control+1 through Control+0 send CMD followed by the corresponding
+  physical EPS page key. Option+1 through Option+0 send EDIT followed by that
+  page key so the original OS opens the matching edit page. Mouse and shortcut activations
+  produce the same brief cyan button glow as visual input acknowledgement; it
+  is not retained as machine state and does not replace any physical EPS LED.
 - The VFD is blank until a real KPC/OS sink publishes it. No placeholder OS
   message is inserted into the display.
 - Complete and short KPC/VFD frames are published atomically to the plug-in
@@ -74,9 +78,16 @@ the verified machine is mechanically extracted from `rom_probe.c`.
   external `EPS_files` folder. Four compact floppy controls provide media
   operations without restarting the machine: `OS` reinserts the configured
   system disk, `NEW` creates a fresh formatted 800 KiB EPS data disk, `LOAD`
-  chooses an EPS `.IMG` or HFE v1 image, and `SAVE` exports the currently
-  inserted disk as `.IMG` or standards-compatible HFE v1. `NEW` confirms in
+  imports an individual `.EFE` file or chooses an EPS `.IMG`/HFE v1 floppy or
+  `.ISO` SCSI image, and
+  `SAVE` exports the currently inserted disk as `.IMG` or standards-compatible
+  HFE v1. EFE import validates its 512-byte exchange header, creates an
+  in-memory EPS directory/FAT, copies the native file blocks unchanged, and
+  then lets the original OS perform the load. `NEW` confirms in
   English before ejecting the current in-memory disk.
+  ISO media is exposed read-only as a 512-byte direct-access device at SCSI ID
+  0 and remains under the original OS's `CHANGE STORAGE DEVICE` and LOAD-page
+  navigation.
   Insertion generates the physical one-shot disk-change input for the original
   OS. No copyrighted image is in the source or bundle.
 - Automatic discovery in the `EPS_files` folder beside the installed `.vst3`
@@ -86,6 +97,10 @@ the verified machine is mechanically extracted from `rom_probe.c`.
   the instance-local logical disk. Save uses an atomic replacement file; HFE
   export MFM-encodes all 80 tracks, two sides and ten 512-byte sectors. An
   automated full-disk `IMG -> HFE -> IMG` round trip verifies every byte.
+  Physical HxC/Gotek captures may contain unused unformatted or CRC-damaged
+  sectors while still booting on hardware. The plug-in retains a per-sector
+  readability map for these images and defers the corresponding WD1772 error
+  until the original OS requests that sector; intact sectors are never altered.
   The blank-disk regression verifies the original geometry, empty directory,
   15 reserved blocks, 1,585 free blocks, and all `DR`/`FB` signatures; the
   original OS then reads the new disk as `NO INSTRUMENTS`.
@@ -123,10 +138,9 @@ the verified machine is mechanically extracted from `rom_probe.c`.
   meter length as vertical VFD bars. Trigger Sensitivity remains the
   separately addressed star marker; neither value is inferred from host
   input amplitude.
-- The mono Sampling Input is automatically monitored on both main outputs
-  while the original OS is actively polling its sampling ADC, matching the
-  hardware Level-Detect and recording path. This board-level monitor is not an
-  always-on DAW dry mix; the physical VOLUME fader controls it.
+- The Sampling Input feeds the emulated EPS ADC and original sampling overlay.
+  Its board monitor reaches both outputs only in the OS Level-Detect mode that
+  displays the trigger marker; other sampling pages and RECORD remain silent.
 - The editor follows the low-profile rack-panel proportions: Volume and mode
   controls at the left, page matrix and Data Entry in the centre, a full-width
   22-cell VFD above the eight track keys, and sampling/sequencer controls at

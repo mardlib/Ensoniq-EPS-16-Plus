@@ -24,6 +24,7 @@ public:
                    std::string lowerRomPath, std::string kpcPath,
                    std::string osDiskPath);
     bool insertDisk(const std::string &path, const std::string &label);
+    bool insertScsiCd(const std::string &path);
     bool createBlankDisk();
     bool saveDisk(const std::string &path, bool hfeFormat);
 
@@ -71,6 +72,10 @@ public:
     }
     [[nodiscard]] std::size_t illegalInstructions() const;
     [[nodiscard]] std::vector<std::uint8_t> captureState() const;
+    [[nodiscard]] std::vector<std::uint8_t>
+    captureRam(std::uint32_t address, std::size_t size) const;
+    bool debugWriteRam(std::uint32_t address, const void *data,
+                       std::size_t size);
     bool restoreState(const void *data, std::size_t size);
 
 private:

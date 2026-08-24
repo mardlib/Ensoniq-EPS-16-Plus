@@ -19,6 +19,37 @@ static void click(uint8_t raw_code) {
     run_for(30000000);
 }
 
+static int click_without_partial_display(uint8_t raw_code,
+                                         const char *expected) {
+    char before[23];
+    eps16_probe_machine_display(before);
+    eps16_probe_machine_panel_byte((uint8_t)(raw_code | 0x80));
+    eps16_probe_machine_panel_byte(0);
+    for (unsigned int step = 0; step < 10; ++step) {
+        char current[23];
+        run_for(100000);
+        eps16_probe_machine_display(current);
+        if (strcmp(current, before) && strcmp(current, expected)) {
+            fprintf(stderr, "partial display after press: |%s|\n", current);
+            return 0;
+        }
+    }
+    eps16_probe_machine_panel_byte(raw_code);
+    eps16_probe_machine_panel_byte(0);
+    for (unsigned int step = 0; step < 300; ++step) {
+        char current[23];
+        run_for(100000);
+        eps16_probe_machine_display(current);
+        if (strcmp(current, before) && strcmp(current, expected)) {
+            fprintf(stderr, "partial display after release: |%s|\n", current);
+            return 0;
+        }
+    }
+    char final[23];
+    eps16_probe_machine_display(final);
+    return !strcmp(final, expected);
+}
+
 static int display_starts_with(const char *expected) {
     char display[23];
     eps16_probe_machine_display(display);
@@ -173,15 +204,14 @@ int main(int argc, char **argv) {
         eps16_probe_machine_indicator_on(2))
         return 1;
 
-    /* Actual OS ADC polling owns the board's separate mono-to-stereo sampling
-       monitor gate. */
+    /* Keep a time-varying input connected while the original OS polls the ADC
+       and renders its Level-Detect meter. This exact #/meter mode owns the
+       sampling board monitor gate. */
     for (unsigned int sample = 0; sample < 1000; ++sample) {
         const float input = 0.25f * sinf((float)sample * 0.13f);
         eps16_probe_machine_sampling_input(input, input);
         run_for(1000);
     }
-    printf("monitor_active=%d\n",
-           eps16_probe_machine_sampling_monitor_active());
     if (!eps16_probe_machine_sampling_monitor_active()) return 1;
     if (level_bar_count() <= 0) return 1;
 
@@ -254,8 +284,7 @@ int main(int argc, char **argv) {
     if (eps16_probe_machine_indicator_on(1) ||
         eps16_probe_machine_indicator_on(2) != 0x0008U)
         return 1;
-    if (!eps16_probe_machine_sampling_monitor_active())
-        return 1;
+    if (eps16_probe_machine_sampling_monitor_active()) return 1;
     const uint64_t recorded_bytes =
         eps16_probe_machine_sample_ram_write_bytes() - writes_before;
     const uint64_t input_conversions =
@@ -298,6 +327,15 @@ int main(int argc, char **argv) {
        This deterministic 0.25-FS source must remain usefully audible. */
     if (playback_peak < 0.025f) return 1;
     if (argc == 5 && !save_external_snapshot(argv[4])) return 1;
+
+    /* A complete ENV page contains several 71/72-terminated fields. The GUI
+       must see the previous page or the complete next page, never the serial
+       controller's partially rebuilt intermediate cells. */
+    click(0x05);
+    click(0x0d);
+    if (!display_starts_with("ENVELOPE=CURRENT VALUE")) return 1;
+    if (!click_without_partial_display(0x11,
+            "HARDVEL=0  99 78 66 62")) return 1;
 
     /* Cursor segments are selected by original OS/KPC traffic.  A plain 62
        field on the Filter MODE page is not a visible cursor.  Conversely,

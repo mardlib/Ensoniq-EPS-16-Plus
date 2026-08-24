@@ -105,12 +105,25 @@ void Eps16PlusProcessor::prepareToPlay(double sampleRate, int) {
         bridge.resetTimeline();
         pendingMachineState.reset();
     }
+    const juce::File mounted(getResourcePath(mountedDiskPathKey));
+    if (machineSink.isReady() && mounted.existsAsFile() &&
+        mounted.getFileExtension().equalsIgnoreCase(".iso"))
+        machineSink.insertScsiCd(mounted.getFullPathName().toStdString());
     setLatencySamples(eps16::vst3::BandlimitedResampler::latencySamples(sampleRate));
 }
 
 bool Eps16PlusProcessor::isBusesLayoutSupported(const BusesLayout &layouts) const {
+    /* AUv2 has no disabled-bus concept: JUCE enables every declared bus while
+       constructing the wrapper.  Accept that wrapper-mandated main input, but
+       keep the VST3 layout (disabled main input plus sampling sidechain)
+       unchanged. */
+    const auto mainInput = layouts.getChannelSet(true, 0);
+    const auto expectedMainInput =
+        wrapperType == wrapperType_AudioUnit
+            ? juce::AudioChannelSet::stereo()
+            : juce::AudioChannelSet::disabled();
     return layouts.inputBuses.size() == 2 &&
-           layouts.getChannelSet(true, 0).isDisabled() &&
+           mainInput == expectedMainInput &&
            layouts.getChannelSet(true, 1) == juce::AudioChannelSet::stereo() &&
            layouts.getMainOutputChannelSet() == juce::AudioChannelSet::stereo();
 }
@@ -275,10 +288,15 @@ bool Eps16PlusProcessor::insertOsDisk() {
 bool Eps16PlusProcessor::insertDisk(const juce::File &diskFile) {
     if (!diskFile.existsAsFile()) return false;
     const auto extension = diskFile.getFileExtension().toLowerCase();
-    if (extension != ".img" && extension != ".hfe") return false;
+    if (extension != ".efe" && extension != ".img" && extension != ".hfe" &&
+        extension != ".iso")
+        return false;
     const juce::ScopedLock lock(getCallbackLock());
-    if (!machineSink.insertDisk(diskFile.getFullPathName().toStdString(),
-                                "Disk"))
+    const bool inserted = extension == ".iso"
+        ? machineSink.insertScsiCd(diskFile.getFullPathName().toStdString())
+        : machineSink.insertDisk(diskFile.getFullPathName().toStdString(),
+                                 extension == ".efe" ? "EFE file" : "Disk");
+    if (!inserted)
         return false;
     state.setProperty(mountedDiskPathKey, diskFile.getFullPathName(), nullptr);
     state.setProperty(blankDiskMountedKey, false, nullptr);
