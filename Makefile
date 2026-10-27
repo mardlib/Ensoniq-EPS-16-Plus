@@ -51,6 +51,7 @@ $(BUILD_DIR)/musashi-input/m68k_in.c: $(MUSASHI_DIR)/m68k_in.c cmake/PatchMusash
 $(GENERATED_DIR)/m68kops.c $(GENERATED_DIR)/m68kops.h &: $(M68KMAKE) $(BUILD_DIR)/musashi-input/m68k_in.c
 	@mkdir -p $(GENERATED_DIR)
 	$(M68KMAKE) $(GENERATED_DIR) $(BUILD_DIR)/musashi-input/m68k_in.c
+	cmake -DEPS16_M68KOPS=$(GENERATED_DIR)/m68kops.c -P cmake/CheckMusashiOpcodeTable.cmake
 
 $(CPU_SMOKE): native/cpu_smoke.c $(MUSASHI_DIR)/m68kcpu.c \
               $(MUSASHI_DIR)/m68kdasm.c $(MUSASHI_DIR)/softfloat/softfloat.c \

@@ -34,10 +34,19 @@ set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
   "${MUSASHI_DIR}/m68k_in.c" "${CMAKE_CURRENT_SOURCE_DIR}/cmake/PatchMusashiInput.cmake")
 
 add_executable(m68kmake "${MUSASHI_DIR}/m68kmake.c")
+if(MSVC)
+  # The official Windows 1.0.10 build shipped an opcode table with bit 14
+  # missing from every mask/match (see cmake/CheckMusashiOpcodeTable.cmake).
+  # m68kmake is a tiny build-time generator, so build it unoptimised.
+  target_compile_options(m68kmake PRIVATE /Od)
+endif()
 add_custom_command(
   OUTPUT "${GENERATED_DIR}/m68kops.c" "${GENERATED_DIR}/m68kops.h"
   COMMAND m68kmake "${GENERATED_DIR}" "${EPS16_MUSASHI_INPUT}"
+  COMMAND "${CMAKE_COMMAND}" "-DEPS16_M68KOPS=${GENERATED_DIR}/m68kops.c"
+          -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckMusashiOpcodeTable.cmake"
   DEPENDS m68kmake "${EPS16_MUSASHI_INPUT}"
+          "${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckMusashiOpcodeTable.cmake"
   VERBATIM
 )
 

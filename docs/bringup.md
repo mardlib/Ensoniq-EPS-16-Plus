@@ -515,3 +515,15 @@ shows each `OUT=` value, and with the ROM effects:
   sends MIDI clock at 208.004 BPM instead of running 0.2–1.5 % slow.
 * The MC68681 transmitters model the holding register in front of the shift
   register: TxRDY stays set when a byte is written to an idle transmitter.
+
+## Generated opcode table check
+
+The build checks the generated `m68kops.c` against a few known opcode table
+entries (`cmake/CheckMusashiOpcodeTable.cmake`) and stops if they are wrong.
+The official Windows x64 1.0.10 VST3 has bit 14 (0x4000) missing from the mask
+and match of all 1967 opcode handler entries (line A reads `0xb000, 0xa000`
+instead of `0xf000, 0xa000`). In that state the emulated 68000 decodes the
+wrong instructions, and the table walk overran its end, which is the crash in
+issue #9. A Windows rebuild of the same version by SteveJamesMusic has a table
+that is correct throughout, so the source is fine. The most likely cause is
+how `m68kmake` was compiled, so MSVC now builds it with `/Od`.
