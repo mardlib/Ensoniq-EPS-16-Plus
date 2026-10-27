@@ -191,6 +191,7 @@ typedef struct {
     uint64_t duart_tx_a_ready_cycle;
     int duart_tx_b_enabled, duart_tx_b_ready;
     uint64_t duart_tx_b_ready_cycle;
+    uint64_t duart_tx_a_shift_end, duart_tx_b_shift_end;
     uint8_t midi_tx[256];
     size_t midi_tx_count;
     uint8_t midi_rx[256];
@@ -417,6 +418,8 @@ static void rom_probe_state_defaults(RomProbeState *state) {
 #define duart_tx_b_enabled RP(duart_tx_b_enabled)
 #define duart_tx_b_ready RP(duart_tx_b_ready)
 #define duart_tx_b_ready_cycle RP(duart_tx_b_ready_cycle)
+#define duart_tx_a_shift_end RP(duart_tx_a_shift_end)
+#define duart_tx_b_shift_end RP(duart_tx_b_shift_end)
 #define midi_tx RP(midi_tx)
 #define midi_tx_count RP(midi_tx_count)
 #define midi_rx RP(midi_rx)
@@ -1044,6 +1047,27 @@ static int16_t audio_to_pcm16(int32_t sample) {
     return (int16_t)sample;
 }
 
+/* Output bus routing (EDIT/Amp "OUT=" on each wavesample).  The OS selects
+   ES5505 output channels as follows:
+     OUT=BUS1 -> channel 0, OUT=AUX1 -> channel 1,
+     OUT=BUS2 -> channel 2, OUT=BUS3 -> channel 3.
+   Played through the ROM effects (e.g. CMP+DIST+REV: BUS1 distorted, BUS2
+   reverb only, BUS3 dry, exactly as the Musician's Manual describes), the
+   ES5510 programs read BUS1 on SER0, BUS2 on SER2 and BUS3 on SER3.  AUX1
+   never reaches the ESP or the main outputs: on the real unit it leaves only
+   through the AUX1 jack of the OEX-6 output expander.
+   Within each ES5505 channel the even bus carries the voice's left volume
+   register and the odd bus its right volume register.  The OS writes a
+   wavesample panned to -99 (the display's "left") into the right-volume
+   register, and the ESP's output word 1 drives the left jack (with ROM-10
+   CHOR+REV+DDL, DDL TIME L=100 R=200, the 100 ms echo is on word 1). */
+#define ESP_INPUT_FROM_ES5505_BUSES(buses, frame) { \
+    audio_to_pcm16((buses)[0][frame]), audio_to_pcm16((buses)[1][frame]), \
+    0, 0, \
+    audio_to_pcm16((buses)[4][frame]), audio_to_pcm16((buses)[5][frame]), \
+    audio_to_pcm16((buses)[6][frame]), audio_to_pcm16((buses)[7][frame]) }
+enum { ESP_OUTPUT_LEFT = 1, ESP_OUTPUT_RIGHT = 0 };
+
 static int32_t apply_master_volume(int32_t sample) {
     unsigned int level = analog_values[5] >> 6;
     return (int32_t)(((int64_t)sample * level) / 1023);
@@ -1091,9 +1115,15 @@ static uint16_t es5505_port_read(void *context) {
     return analog_values[channel];
 }
 
+static void irq_refresh_all(void);
+
 static uint16_t es5505_read16(unsigned int address) {
     unsigned int reg = ((address - ES5505_BASE) >> 1) & 15;
-    return es5505_core_read(&es5505, reg);
+    const uint16_t value = es5505_core_read(&es5505, reg);
+    /* Reading the IRQV register acknowledges the ES5505 voice interrupt;
+       drop IRQ1 at once if no other voice is pending. */
+    irq_refresh_all();
+    return value;
 }
 
 static void es5505_write16(unsigned int address, uint16_t value) {
@@ -1265,12 +1295,25 @@ static uint64_t bus_cycle_now(void) {
 
 static unsigned int duart_interrupt_status(void);
 
+/* All three interrupt sources (ES5505 IRQ1, DMAC IRQ2, MC68681 IRQ3) are
+   level-sensitive and stay asserted until their cause is acknowledged.  Drive
+   the CPU's interrupt level from the highest source still pending, so that
+   clearing one source never hides another, and a source that is still pending
+   when the OS lowers its mask is taken at once. */
+static void irq_refresh_all(void) {
+    int level = 0;
+    if (es5505_core_irq_pending(&es5505)) level = 1;
+    if (dmac_irq_channel >= 0) level = 2;
+    if (duart_interrupt_status() & duart_registers[5]) level = 3;
+    m68k_set_irq(level);
+}
+
 static void duart_refresh_irq_line(void) {
     /* MC68681 sources are level-sensitive. Reading the last byte from RHRB
        must drop IRQ3 while the CPU is still inside the handler. Otherwise
        the fixed execution slice can vector a second time with an empty ISR;
        the original sampling handler reports exactly that as ERROR 145. */
-    m68k_set_irq((duart_interrupt_status() & duart_registers[5]) ? 3 : 0);
+    irq_refresh_all();
 }
 
 static int panel_schedule_at(uint8_t value, uint64_t cycle) {
@@ -1626,8 +1669,19 @@ static void duart_write(unsigned int address, unsigned int value) {
     }
     if (reg == 3) { /* THRA: external MIDI output */
         if (midi_tx_count < sizeof(midi_tx)) midi_tx[midi_tx_count++] = (uint8_t)value;
-        duart_tx_a_ready = 0;
-        duart_tx_a_ready_cycle = cycle + MIDI_BYTE_CYCLES;
+        /* The MC68681 transmitter has a holding register in front of the
+           shift register.  A byte written while the shifter is idle moves
+           straight on and TxRDY stays set; only a byte written while a
+           previous byte is still being shifted out waits, and TxRDY drops
+           until that byte moves into the shifter. */
+        if (cycle >= duart_tx_a_shift_end) {
+            duart_tx_a_shift_end = cycle + MIDI_BYTE_CYCLES;
+            duart_tx_a_ready = 1;
+        } else {
+            duart_tx_a_ready = 0;
+            duart_tx_a_ready_cycle = duart_tx_a_shift_end;
+            duart_tx_a_shift_end += MIDI_BYTE_CYCLES;
+        }
         duart_refresh_irq_line();
         m68k_end_timeslice();
     }
@@ -1637,8 +1691,15 @@ static void duart_write(unsigned int address, unsigned int value) {
         duart_refresh_irq_line();
     }
     if (reg == 11) { /* THRB: panel/KPC transport */
-        duart_tx_b_ready = 0;
-        duart_tx_b_ready_cycle = cycle + PANEL_BYTE_CYCLES;
+        /* Same holding-register behaviour as channel A. */
+        if (cycle >= duart_tx_b_shift_end) {
+            duart_tx_b_shift_end = cycle + PANEL_BYTE_CYCLES;
+            duart_tx_b_ready = 1;
+        } else {
+            duart_tx_b_ready = 0;
+            duart_tx_b_ready_cycle = duart_tx_b_shift_end;
+            duart_tx_b_shift_end += PANEL_BYTE_CYCLES;
+        }
         duart_refresh_irq_line();
         if (panel_trace_count < PANEL_TRACE_SIZE)
             panel_trace[panel_trace_count++] = (PanelTrace){
@@ -2273,6 +2334,7 @@ static void dmac_write8(unsigned int address, uint8_t value) {
         if (dmac_irq_channel == (int)channel &&
             (dmac_registers[channel][0] & 0xf2) == 0)
             dmac_irq_channel = -1;
+        irq_refresh_all();
         return;
     }
     dmac_registers[channel][reg] = value;
@@ -2287,6 +2349,7 @@ static void dmac_write8(unsigned int address, uint8_t value) {
         }
         if (!(value & 0x08) && dmac_irq_channel == (int)channel)
             dmac_irq_channel = -1;
+        irq_refresh_all();
     }
 }
 
@@ -3275,6 +3338,7 @@ int main(int argc, char **argv) {
         if (next_cycle > (uint64_t)executed)
             budget = (int)(next_cycle - (uint64_t)executed);
         else budget = 1;
+        irq_refresh_all();
         int slice = m68k_execute(budget);
         executed += slice;
         current_cycle = executed;
@@ -3339,7 +3403,7 @@ int main(int argc, char **argv) {
             executed += m68k_execute(128);
             current_cycle = executed;
             duart_service_time((uint64_t)executed);
-            m68k_set_irq(0);
+            irq_refresh_all();
         }
         /* Cycle-timed MC68681 counter/timer and channel-B receive IRQ. */
         if (duart_interrupt_status() & duart_registers[5]) {
@@ -3348,7 +3412,7 @@ int main(int argc, char **argv) {
             executed += m68k_execute(128);
             current_cycle = executed;
             duart_service_time((uint64_t)executed);
-            m68k_set_irq(0);
+            irq_refresh_all();
             ++timer_irqs;
         }
         uint64_t elapsed_audio_cycles = (uint64_t)(executed - audio_scheduled_cycle);
@@ -3380,17 +3444,9 @@ int main(int argc, char **argv) {
                 }
                 /* EPS-16 signal pump: the original OS configures SER1 as the
                    output and SER0/SER2/SER3 as inputs (Host Serial Control
-                   0x48).  ES5505 Bus1..3 feed those three input ports; the
-                   fourth ES5505 assignment remains the separate Aux1 bus. */
-                const int16_t esp_inputs[8] = {
-                    audio_to_pcm16(buses[0][frame]),
-                    audio_to_pcm16(buses[1][frame]),
-                    0, 0,
-                    audio_to_pcm16(buses[2][frame]),
-                    audio_to_pcm16(buses[3][frame]),
-                    audio_to_pcm16(buses[4][frame]),
-                    audio_to_pcm16(buses[5][frame])
-                };
+                   0x48).  ESP_INPUT_FROM_ES5505_BUSES documents which ES5505
+                   channel feeds which port; AUX1 bypasses the effects. */
+                const int16_t esp_inputs[8] = ESP_INPUT_FROM_ES5505_BUSES(buses, frame);
                 int16_t esp_outputs[2] = {0, 0};
                 if (es5510_host_upload_active &&
                     (uint64_t)current_cycle >= es5510_host_access_until) {
@@ -3407,8 +3463,8 @@ int main(int argc, char **argv) {
                     ? -(int32_t)esp_outputs[1] : (int32_t)esp_outputs[1];
                 if (esp_magnitude > es5510_return_peak)
                     es5510_return_peak = esp_magnitude;
-                int32_t output_left = apply_master_volume((int32_t)esp_outputs[0] << 4);
-                int32_t output_right = apply_master_volume((int32_t)esp_outputs[1] << 4);
+                int32_t output_left = apply_master_volume((int32_t)esp_outputs[ESP_OUTPUT_LEFT] << 4);
+                int32_t output_right = apply_master_volume((int32_t)esp_outputs[ESP_OUTPUT_RIGHT] << 4);
                 int32_t magnitude = output_left < 0 ? -output_left : output_left;
                 if (magnitude > audio_peak) audio_peak = magnitude;
                 magnitude = output_right < 0 ? -output_right : output_right;
@@ -3430,7 +3486,7 @@ int main(int argc, char **argv) {
             executed += m68k_execute(128);
             current_cycle = executed;
             duart_service_time((uint64_t)executed);
-            m68k_set_irq(0);
+            irq_refresh_all();
             ++es5505_irqs;
         }
         if (slice <= 0 && timer_irqs > 100000) break;

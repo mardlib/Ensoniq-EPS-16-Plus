@@ -191,6 +191,9 @@ static void plugin_capture_keyon(unsigned int voice) {
 #define PLUGIN_SNAPSHOT_V7_FIELDS(X) \
     X(disk_sector_status) X(fdc_error_status)
 
+#define PLUGIN_SNAPSHOT_V8_FIELDS(X) \
+    X(duart_rx_a_enabled) X(duart_tx_a_shift_end) X(duart_tx_b_shift_end)
+
 Eps16ProbeMachine *eps16_probe_machine_create(void) {
     Eps16ProbeMachine *machine = calloc(1, sizeof(*machine));
     if (!machine) return NULL;
@@ -336,17 +339,14 @@ static void plugin_render_audio(uint64_t elapsed_cycles, uint64_t end_cycle) {
                ordinary hardware writes; no effect-name recognition is
                involved. */
             const int external_input_selected = !(duart_output & 0x04);
-            const int16_t esp_inputs[8] = {
-                external_input_selected ? plugin_input_sample
-                                        : audio_to_pcm16(buses[0][frame]),
-                external_input_selected ? 0
-                                        : audio_to_pcm16(buses[1][frame]),
-                0, 0,
-                audio_to_pcm16(buses[2][frame]),
-                audio_to_pcm16(buses[3][frame]),
-                audio_to_pcm16(buses[6][frame]),
-                audio_to_pcm16(buses[7][frame])
-            };
+            /* ES5505 channel routing: see ESP_INPUT_FROM_ES5505_BUSES in
+               rom_probe.c.  BUS1 -> SER0, BUS2 -> SER2, BUS3 -> SER3; AUX1
+               (channel 1) bypasses the ESP and the main outputs. */
+            int16_t esp_inputs[8] = ESP_INPUT_FROM_ES5505_BUSES(buses, frame);
+            if (external_input_selected) {
+                esp_inputs[0] = plugin_input_sample;
+                esp_inputs[1] = 0;
+            }
             int16_t esp_outputs[2] = {0, 0};
             if (es5510_host_upload_active &&
                 (uint64_t)current_cycle >= es5510_host_access_until) {
@@ -367,9 +367,9 @@ static void plugin_render_audio(uint64_t elapsed_cycles, uint64_t end_cycle) {
             if (esp_magnitude > es5510_return_peak)
                 es5510_return_peak = esp_magnitude;
             const int32_t output_left =
-                apply_master_volume((int32_t)esp_outputs[0] << 4);
+                apply_master_volume((int32_t)esp_outputs[ESP_OUTPUT_LEFT] << 4);
             const int32_t output_right =
-                apply_master_volume((int32_t)esp_outputs[1] << 4);
+                apply_master_volume((int32_t)esp_outputs[ESP_OUTPUT_RIGHT] << 4);
             if (plugin_restored_output_suppressed) {
                 const int restored_output_quiet =
                     !plugin_restored_voice_mask &&
@@ -594,6 +594,7 @@ void eps16_probe_machine_run_until(uint64_t target_cycle) {
             next_cycle = duart_tx_b_ready_cycle;
         budget = next_cycle > plugin_executed
                      ? (int)(next_cycle - plugin_executed) : 1;
+        irq_refresh_all();
         const int slice = m68k_execute(budget);
         if (slice <= 0) break;
         plugin_executed += (uint64_t)slice;
@@ -606,14 +607,14 @@ void eps16_probe_machine_run_until(uint64_t target_cycle) {
             plugin_executed += (uint64_t)m68k_execute(128);
             current_cycle = (long long)plugin_executed;
             duart_service_time(plugin_executed);
-            m68k_set_irq(0);
+            irq_refresh_all();
         }
         if (duart_interrupt_status() & duart_registers[5]) {
             m68k_set_irq(3);
             plugin_executed += (uint64_t)m68k_execute(128);
             current_cycle = (long long)plugin_executed;
             duart_service_time(plugin_executed);
-            m68k_set_irq(0);
+            irq_refresh_all();
             ++plugin_timer_irqs;
         }
         const uint64_t elapsed = plugin_executed - plugin_audio_scheduled_cycle;
@@ -624,7 +625,7 @@ void eps16_probe_machine_run_until(uint64_t target_cycle) {
             plugin_executed += (uint64_t)m68k_execute(128);
             current_cycle = (long long)plugin_executed;
             duart_service_time(plugin_executed);
-            m68k_set_irq(0);
+            irq_refresh_all();
             ++es5505_irqs;
         }
     }
@@ -895,7 +896,8 @@ size_t eps16_probe_machine_state_size(void) {
            PLUGIN_SNAPSHOT_V4_FIELDS(SNAPSHOT_FIELD_SIZE)
            PLUGIN_SNAPSHOT_V5_FIELDS(SNAPSHOT_FIELD_SIZE)
            PLUGIN_SNAPSHOT_V6_FIELDS(SNAPSHOT_FIELD_SIZE)
-           PLUGIN_SNAPSHOT_V7_FIELDS(SNAPSHOT_FIELD_SIZE);
+           PLUGIN_SNAPSHOT_V7_FIELDS(SNAPSHOT_FIELD_SIZE)
+           PLUGIN_SNAPSHOT_V8_FIELDS(SNAPSHOT_FIELD_SIZE);
 #undef SNAPSHOT_FIELD_SIZE
 }
 
@@ -905,7 +907,7 @@ int eps16_probe_machine_save_state(void *data, size_t size) {
     memset(data, 0, size);
     PluginSnapshotHeader *header = (PluginSnapshotHeader *)data;
     memcpy(header->magic, "EPS16ST\0", 8);
-    header->version = 7;
+    header->version = 8;
     header->header_size = sizeof(*header);
     header->total_size = size;
     header->m68k_context_size = m68k_context_size();
@@ -929,6 +931,7 @@ int eps16_probe_machine_save_state(void *data, size_t size) {
     PLUGIN_SNAPSHOT_V5_FIELDS(SNAPSHOT_SAVE_FIELD)
     PLUGIN_SNAPSHOT_V6_FIELDS(SNAPSHOT_SAVE_FIELD)
     PLUGIN_SNAPSHOT_V7_FIELDS(SNAPSHOT_SAVE_FIELD)
+    PLUGIN_SNAPSHOT_V8_FIELDS(SNAPSHOT_SAVE_FIELD)
 #undef SNAPSHOT_SAVE_FIELD
 
     Es5505Core saved_es5505 = es5505;
@@ -979,7 +982,11 @@ int eps16_probe_machine_load_state(const void *data, size_t size,
     }
     PluginSnapshotHeader header;
     memcpy(&header, data, sizeof(header));
-    const size_t expected_v6 = eps16_probe_machine_state_size();
+    const size_t expected_v8 = eps16_probe_machine_state_size();
+#define SNAPSHOT_V8_FIELD_SIZE(name) - sizeof(name)
+    const size_t expected_v6 = expected_v8
+        PLUGIN_SNAPSHOT_V8_FIELDS(SNAPSHOT_V8_FIELD_SIZE);
+#undef SNAPSHOT_V8_FIELD_SIZE
 #define SNAPSHOT_V7_FIELD_SIZE(name) - sizeof(name)
     const size_t expected_v6_legacy = expected_v6
         PLUGIN_SNAPSHOT_V7_FIELDS(SNAPSHOT_V7_FIELD_SIZE);
@@ -1009,9 +1016,10 @@ int eps16_probe_machine_load_state(const void *data, size_t size,
                           : header.version == 3 ? expected_v3
                           : header.version == 4 ? expected_v4
                           : header.version == 5 ? expected_v5
-                          : header.version == 6 ? expected_v6_legacy : expected_v6;
+                          : header.version == 6 ? expected_v6_legacy
+                          : header.version == 7 ? expected_v6 : expected_v8;
     if (memcmp(header.magic, "EPS16ST\0", 8) ||
-        (header.version < 1 || header.version > 7) ||
+        (header.version < 1 || header.version > 8) ||
         header.header_size != sizeof(header) || header.total_size != size ||
         size != expected || header.m68k_context_size != m68k_context_size()) {
         plugin_error(error, error_size, "machine snapshot format is incompatible");
@@ -1091,6 +1099,16 @@ int eps16_probe_machine_load_state(const void *data, size_t size,
         memset(disk_sector_status, EPS16_SECTOR_READABLE,
                sizeof(disk_sector_status));
         fdc_error_status = 0;
+    }
+    if (header.version >= 8) {
+        PLUGIN_SNAPSHOT_V8_FIELDS(SNAPSHOT_LOAD_FIELD)
+    } else {
+        /* Older snapshots did not store the MIDI receiver enable, so MIDI
+           input stayed dead after a restore until the OS re-enabled it.  The
+           OS enables channel A's receiver at boot and keeps it on. */
+        duart_rx_a_enabled = 1;
+        duart_tx_a_shift_end = 0;
+        duart_tx_b_shift_end = 0;
     }
 #undef SNAPSHOT_LOAD_FIELD
     snapshot_read(&reader, &es5505, sizeof(es5505));

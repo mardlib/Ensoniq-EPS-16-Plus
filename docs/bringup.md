@@ -244,9 +244,14 @@ still be promoted only through independent state-transition tests.
 The EPS-16 Plus OS writes ES5510 Host Serial Control `0x48`: Sony serial
 format, with SER1 configured as the output and SER0, SER2, and SER3 configured
 as inputs. Its effect programs agree with that hardware configuration: they
-read the three input ports and write their result to SER1L/SER1R. ES5505 route
-codes `0`, `1`, and `3` (Bus1..3) feed SER0/SER2/SER3, the OS-selected SER1
-output feeds the main DAC, and route code `2` (Aux1) remains separate.
+read the three input ports and write their result to SER1L/SER1R. The OS
+puts a wavesample's EDIT/Amp `OUT=` choice on ES5505 output channel `0` (BUS1),
+`2` (BUS2), `3` (BUS3) or `1` (AUX1). Channels 0, 2 and 3 feed SER0/SER2/SER3,
+the OS-selected SER1 output feeds the main DAC, and channel 1 (AUX1) never
+reaches the ESP or the main outputs: on the hardware it leaves only through the
+OEX-6 expander's AUX1 jack. (Earlier revisions had channels 1 and 2 swapped,
+which put AUX1 sounds into the main mix and silenced BUS2 sounds; see
+"Output routing and channel orientation" below.)
 A deterministic original-OS instrument run now measures ES5505 Bus1 peak
 `44697` and nonzero ESP output peak `3527` (previously exactly zero), with no
 illegal 68000 instructions.  This verifies the digital route, but audible
@@ -390,8 +395,8 @@ written zero bits makes a valid sampling-program load fail with `ERROR 145`.
 
 The native audio path now preserves all four ES5505 stereo routes and executes
 the original OS-uploaded ES5510 GPR/instruction program with its external
-delay RAM. ES5505 route codes `0`, `1`, and `3` for Bus1, Bus2, and Bus3 feed
-ES5510 serial inputs 0, 2, and 3; route code `2` is the separate Aux1 pair.
+delay RAM. ES5505 channels `0`, `2`, and `3` (Bus1, Bus2, and Bus3) feed
+ES5510 serial inputs 0, 2, and 3; channel `1` is the separate Aux1 pair.
 The OS-configured serial output 1 feeds the main EPS DAC. This is device-side
 routing rather than a browser reverb substitute.
 During effects, Host Serial Control `48` configures serial port 1 as the main
@@ -479,3 +484,34 @@ timing.
   https://github.com/kstenerud/Musashi
 - MAME Ensoniq driver and panel devices (hardware/protocol reference):
   https://github.com/mamedev/mame/tree/master/src/mame/ensoniq
+
+## Output routing and channel orientation
+
+Verified against the original OS 1.30 with instruments whose EDIT/Amp page
+shows each `OUT=` value, and with the ROM effects:
+
+* `OUT=BUS1` plays on ES5505 channel 0, `OUT=AUX1` on channel 1, `OUT=BUS2` on
+  channel 2 and `OUT=BUS3` on channel 3.
+* With ROM-11 CMP+DIST+REV, noise injected on SER0 comes out distorted, on SER2
+  with reverb only, and on SER3 dry, which matches the manual's description of
+  BUS1, BUS2 and BUS3 for that effect. Nothing is read from channel 1.
+* Within a channel the even bus carries the voice's left-volume register and
+  the odd bus its right-volume register. The OS writes a wavesample panned to
+  `-99` (the display's and manual's "left") into the right-volume register.
+  ESP output word 1 therefore drives the left jack: with ROM-10 CHOR+REV+DDL at
+  `DDL TIME L=100 R=200`, the 100 ms echo appears on word 1.
+
+## Interrupt and timer timing
+
+* All three interrupt sources (ES5505 IRQ1, DMAC IRQ2, MC68681 IRQ3) are
+  level-sensitive; the CPU interrupt level is recomputed from every source
+  whenever one of them changes, and before each execution slice.
+* The OS idles in `STOP #$2000` right after polling with the interrupt mask at
+  7. Unpatched Musashi takes an interrupt that is already pending when STOP
+  lowers the mask, but still charges the rest of the time slice, so the 1 kHz
+  DUART timer interrupt was serviced up to one tick late and the next tick was
+  lost. The build patches Musashi's STOP (`cmake/PatchMusashiInput.cmake`).
+  With the patch no tick is lost during song playback; DEMON SONG 1 (208 BPM)
+  sends MIDI clock at 208.004 BPM instead of running 0.2–1.5 % slow.
+* The MC68681 transmitters model the holding register in front of the shift
+  register: TxRDY stays set when a byte is written to an idle transmitter.
