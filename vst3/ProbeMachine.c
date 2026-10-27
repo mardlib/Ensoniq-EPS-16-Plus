@@ -395,17 +395,14 @@ static void plugin_render_audio(uint64_t elapsed_cycles, uint64_t end_cycle) {
                ordinary hardware writes; no effect-name recognition is
                involved. */
             const int external_input_selected = !(duart_output & 0x04);
-            const int16_t esp_inputs[8] = {
-                external_input_selected ? plugin_input_sample
-                                        : audio_to_pcm16(buses[0][frame]),
-                external_input_selected ? 0
-                                        : audio_to_pcm16(buses[1][frame]),
-                0, 0,
-                audio_to_pcm16(buses[4][frame]),
-                audio_to_pcm16(buses[5][frame]),
-                audio_to_pcm16(buses[6][frame]),
-                audio_to_pcm16(buses[7][frame])
-            };
+            /* ES5505 channel routing: see ESP_INPUT_FROM_ES5505_BUSES in
+               rom_probe.c.  BUS1 -> SER0, BUS2 -> SER2, BUS3 -> SER3; AUX1
+               (channel 1) bypasses the ESP and the main outputs. */
+            int16_t esp_inputs[8] = ESP_INPUT_FROM_ES5505_BUSES(buses, frame);
+            if (external_input_selected) {
+                esp_inputs[0] = plugin_input_sample;
+                esp_inputs[1] = 0;
+            }
             int16_t esp_outputs[2] = {0, 0};
             if (es5510_host_upload_active &&
                 (uint64_t)current_cycle >= es5510_host_access_until) {
@@ -426,9 +423,9 @@ static void plugin_render_audio(uint64_t elapsed_cycles, uint64_t end_cycle) {
             if (esp_magnitude > es5510_return_peak)
                 es5510_return_peak = esp_magnitude;
             const int32_t output_left =
-                apply_master_volume((int32_t)esp_outputs[0] << 4);
+                apply_master_volume((int32_t)esp_outputs[ESP_OUTPUT_LEFT] << 4);
             const int32_t output_right =
-                apply_master_volume((int32_t)esp_outputs[1] << 4);
+                apply_master_volume((int32_t)esp_outputs[ESP_OUTPUT_RIGHT] << 4);
             if (plugin_restored_output_suppressed) {
                 const int restored_output_quiet =
                     !plugin_restored_voice_mask &&
@@ -456,15 +453,19 @@ static void plugin_render_audio(uint64_t elapsed_cycles, uint64_t end_cycle) {
             const float outputs[8] = {
                 plugin_output_left,
                 plugin_output_right,
-                /* EPS Bus 2 is ES5505 raw bus 3. */
-                (float)audio_to_pcm16(buses[4][frame]) / 32768.0f,
+                /* OEX-6 pairs, left then right.  The OS writes the EPS's
+                   left pan into the ES5505 right-volume register, so the
+                   odd bus of each channel is the left jack, as for the
+                   main outputs (see docs/bringup.md). */
+                /* EPS Bus 2 is ES5505 channel 2. */
                 (float)audio_to_pcm16(buses[5][frame]) / 32768.0f,
-                /* EPS Bus 3 is ES5505 raw bus 4. */
-                (float)audio_to_pcm16(buses[6][frame]) / 32768.0f,
+                (float)audio_to_pcm16(buses[4][frame]) / 32768.0f,
+                /* EPS Bus 3 is ES5505 channel 3. */
                 (float)audio_to_pcm16(buses[7][frame]) / 32768.0f,
-                /* EPS Aux 1 is ES5505 raw bus 2. */
-                (float)audio_to_pcm16(buses[2][frame]) / 32768.0f,
-                (float)audio_to_pcm16(buses[3][frame]) / 32768.0f
+                (float)audio_to_pcm16(buses[6][frame]) / 32768.0f,
+                /* EPS Aux 1 is ES5505 channel 1. */
+                (float)audio_to_pcm16(buses[3][frame]) / 32768.0f,
+                (float)audio_to_pcm16(buses[2][frame]) / 32768.0f
             };
             plugin_queue_audio(frame_cycle, output_divider, outputs);
             frame_cycle += output_divider;
@@ -665,6 +666,7 @@ void eps16_probe_machine_run_until(uint64_t target_cycle) {
             next_cycle = duart_tx_b_ready_cycle;
         budget = next_cycle > plugin_executed
                      ? (int)(next_cycle - plugin_executed) : 1;
+        irq_refresh_all();
         const int slice = m68k_execute(budget);
         if (slice <= 0) break;
         plugin_executed += (uint64_t)slice;
@@ -677,14 +679,14 @@ void eps16_probe_machine_run_until(uint64_t target_cycle) {
             plugin_executed += (uint64_t)m68k_execute(128);
             current_cycle = (long long)plugin_executed;
             duart_service_time(plugin_executed);
-            m68k_set_irq(0);
+            irq_refresh_all();
         }
         if (duart_interrupt_status() & duart_registers[5]) {
             m68k_set_irq(3);
             plugin_executed += (uint64_t)m68k_execute(128);
             current_cycle = (long long)plugin_executed;
             duart_service_time(plugin_executed);
-            m68k_set_irq(0);
+            irq_refresh_all();
             ++plugin_timer_irqs;
         }
         const uint64_t elapsed = plugin_executed - plugin_audio_scheduled_cycle;
@@ -695,7 +697,7 @@ void eps16_probe_machine_run_until(uint64_t target_cycle) {
             plugin_executed += (uint64_t)m68k_execute(128);
             current_cycle = (long long)plugin_executed;
             duart_service_time(plugin_executed);
-            m68k_set_irq(0);
+            irq_refresh_all();
             ++es5505_irqs;
         }
     }
@@ -1205,6 +1207,10 @@ int eps16_probe_machine_load_state(const void *data, size_t size,
         duart_rx_a_enabled = (command & 0x02) ? 0 :
             ((command & 0x01) || (duart_registers[5] & 0x02)) != 0;
     }
+    /* The transmitter shift-register end times are not stored; at most one
+       byte is in flight, so restore with both shift registers idle. */
+    duart_tx_a_shift_end = 0;
+    duart_tx_b_shift_end = 0;
 #undef SNAPSHOT_LOAD_FIELD
     snapshot_read(&reader, &es5505, sizeof(es5505));
     snapshot_read(&reader, &kpc_device, sizeof(kpc_device));
