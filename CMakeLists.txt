@@ -22,30 +22,16 @@ endif()
 set(GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
 file(MAKE_DIRECTORY "${GENERATED_DIR}")
 
-# Musashi's generated opcode-table builder walks mask groups using an
-# unbounded sentinel search.  MSVC can order the generated groups such that
-# the first search reaches and steps past the sentinel.  Give every group
-# walk an explicit end pointer; the existing generic first pass still handles
-# any group that is not in the expected optimized order.
+# Musashi's m68k_in.c is patched before opcode generation; see
+# cmake/PatchMusashiInput.cmake for the two changes and why they are needed.
 set(EPS16_MUSASHI_INPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/musashi-input")
 set(EPS16_MUSASHI_INPUT "${EPS16_MUSASHI_INPUT_DIR}/m68k_in.c")
 file(MAKE_DIRECTORY "${EPS16_MUSASHI_INPUT_DIR}")
-file(READ "${MUSASHI_DIR}/m68k_in.c" EPS16_MUSASHI_INPUT_SOURCE)
-string(REPLACE
-  "const opcode_handler_struct *ostruct;"
-  "const opcode_handler_struct *ostruct;\n\tconst opcode_handler_struct *table_end;"
-  EPS16_MUSASHI_INPUT_SOURCE "${EPS16_MUSASHI_INPUT_SOURCE}")
-string(REPLACE
-  "ostruct = m68k_opcode_handler_table;"
-  "ostruct = m68k_opcode_handler_table;\n\ttable_end = m68k_opcode_handler_table + (sizeof(m68k_opcode_handler_table) / sizeof(m68k_opcode_handler_table[0])) - 1;"
-  EPS16_MUSASHI_INPUT_SOURCE "${EPS16_MUSASHI_INPUT_SOURCE}")
-string(REPLACE "while(ostruct->mask"
-               "while(ostruct < table_end && ostruct->mask"
-               EPS16_MUSASHI_INPUT_SOURCE "${EPS16_MUSASHI_INPUT_SOURCE}")
-if(EPS16_MUSASHI_INPUT_SOURCE MATCHES "while\\(ostruct->mask")
-  message(FATAL_ERROR "Musashi opcode-table bounds patch was incomplete")
-endif()
-file(WRITE "${EPS16_MUSASHI_INPUT}" "${EPS16_MUSASHI_INPUT_SOURCE}")
+set(EPS16_MUSASHI_IN "${MUSASHI_DIR}/m68k_in.c")
+set(EPS16_MUSASHI_OUT "${EPS16_MUSASHI_INPUT}")
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/PatchMusashiInput.cmake")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+  "${MUSASHI_DIR}/m68k_in.c" "${CMAKE_CURRENT_SOURCE_DIR}/cmake/PatchMusashiInput.cmake")
 
 add_executable(m68kmake "${MUSASHI_DIR}/m68kmake.c")
 add_custom_command(
